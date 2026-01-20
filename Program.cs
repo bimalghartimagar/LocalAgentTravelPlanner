@@ -1,34 +1,40 @@
 ﻿using LocalAgentTravelPlanner.Agents;
+using LocalAgentTravelPlanner.Services;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
-using OllamaSharp;
 
 internal class Program
 {
     private static async Task Main(string[] args)
     {
         Console.WriteLine("╔══════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║          🌍 Multi-Agent Travel Planner System 🌍             ║");
-        Console.WriteLine("║     Powered by Microsoft Agent Framework + Ollama            ║");
+        Console.WriteLine("║          Multi-Agent Travel Planner System                   ║");
+        Console.WriteLine("║     Powered by Microsoft Agent Framework                     ║");
         Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
         Console.WriteLine();
 
-        // Configuration
-        var ollamaUri = new Uri("http://localhost:11434");
-        const string workerModel = "qwen2.5:7b";  // Fast model for worker agents
-
-        Console.WriteLine($"🔧 Connecting to Ollama at {ollamaUri}...");
-        Console.WriteLine($"🧠 Using model: {workerModel}");
-        Console.WriteLine();
+        // Parse command line for provider preference
+        // Usage: dotnet run -- --provider anthropic
+        //    or: dotnet run -- --provider ollama
+        string? preferredProvider = null;
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i] == "--provider")
+            {
+                preferredProvider = args[i + 1];
+                break;
+            }
+        }
 
         try
         {
-            // Initialize Ollama client with function calling support
-            IChatClient baseClient = new OllamaApiClient(ollamaUri, workerModel);
-            IChatClient chatClientWithTools = new ChatClientBuilder(baseClient)
-                .UseFunctionInvocation()
-                .Build();
+            // Create chat client using factory (auto-detects or uses preference)
+            var (chatClientWithTools, provider, model) = ChatClientFactory.CreateWithAutoDetect(preferredProvider);
+
+            Console.WriteLine($"Provider: {provider}");
+            Console.WriteLine($"Model: {model}");
+            Console.WriteLine();
 
             // Create specialized agents using factory pattern
             Console.WriteLine("🤖 Initializing agents...");
@@ -41,19 +47,28 @@ internal class Program
             
             var accountant = AccountantAgentFactory.Create(chatClientWithTools);
             Console.WriteLine("   ✅ Accountant Agent (budget analysis)");
-            
-            // TODO: Phase 2 - Add Auditor Agent with larger model
-            // const string auditorModel = "llama3:70b";
-            // var auditor = AuditorAgentFactory.Create(auditorClientWithTools);
-            // Console.WriteLine("   ✅ Auditor Agent (validation & scoring)");
+
+            // Auditor Agent - The validation checkpoint
+            // NOTE: In production, you might use a larger model for the Auditor
+            // because it needs to carefully analyze and judge the entire plan.
+            // For now, we use the same model to keep things simple.
+            var auditor = AuditorAgentFactory.Create(chatClientWithTools);
+            Console.WriteLine("   ✅ Auditor Agent (validation & scoring)");
+
+            // Aggregator Agent - Creates the final user-friendly output
+            // Takes all previous outputs and synthesizes them into a polished document
+            var aggregator = AggregatorAgentFactory.Create(chatClientWithTools);
+            Console.WriteLine("   ✅ Aggregator Agent (final presentation)");
 
             Console.WriteLine();
             Console.WriteLine("═══════════════════════════════════════════════════════════════");
             Console.WriteLine();
 
-            // Build sequential workflow: Research → Plan → Budget (→ Audit in Phase 2)
+            // Build sequential workflow: Research → Plan → Budget → Audit → Aggregate
+            // Each agent receives the full conversation history from previous agents.
+            // This enables the Auditor to verify claims and the Aggregator to synthesize.
             var workflow = AgentWorkflowBuilder.BuildSequential(
-                new List<ChatClientAgent> { researcher, planner, accountant }
+                new List<ChatClientAgent> { researcher, planner, accountant, auditor, aggregator }
             );
 
             // Display example prompts
@@ -107,11 +122,14 @@ internal class Program
         }
         catch (HttpRequestException ex)
         {
-            Console.WriteLine($"❌ Failed to connect to Ollama: {ex.Message}");
+            Console.WriteLine($"Connection error: {ex.Message}");
             Console.WriteLine();
-            Console.WriteLine("💡 Make sure Ollama is running:");
+            Console.WriteLine("If using Ollama, make sure it's running:");
             Console.WriteLine("   1. Open a terminal and run: ollama serve");
-            Console.WriteLine($"   2. Pull the model: ollama pull {workerModel}");
+            Console.WriteLine("   2. Pull a model: ollama pull qwen2.5:7b");
+            Console.WriteLine();
+            Console.WriteLine("If using Anthropic, check your API key:");
+            Console.WriteLine("   set ANTHROPIC_API_KEY=your-api-key");
             Console.WriteLine();
             Console.WriteLine("Press any key to exit...");
             Console.ReadKey();

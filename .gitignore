@@ -12,3 +12,4 @@ bin/
 *.bak
 *.swp
 *.sln.DotSettings
+.secret
