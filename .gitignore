@@ -1,0 +1,14 @@
+obj/
+bin/
+.vs/
+*.user
+*.suo
+*.cache
+*.pdb
+*.dll
+*.exe
+*.log
+*.tmp
+*.bak
+*.swp
+*.sln.DotSettings
