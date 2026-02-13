@@ -51,7 +51,7 @@ namespace LocalAgentTravelPlanner.Agents
 
             Your job: Validate EVERYTHING and provide a final verdict.
 
-            ### The Four Evaluation Criteria
+            ### The Six Evaluation Criteria
 
             You MUST score each criterion on a 1-5 scale:
 
@@ -83,6 +83,20 @@ namespace LocalAgentTravelPlanner.Agents
             Score 2: Multiple unverified claims
             Score 1: Major hallucinations - hotels/attractions invented that don't exist
 
+            #### 5. RELEVANCE (Does it answer the user's request?)
+            Score 5: All user requirements addressed - destination, duration, budget, travel style
+            Score 4: Most requirements addressed, 1 minor aspect missed
+            Score 3: Core requirements met but some specifics ignored
+            Score 2: Partially relevant - misses key aspects of the request
+            Score 1: Plan does not match what the user asked for
+
+            #### 6. COMPLETENESS (Does it cover all necessary sections?)
+            Score 5: All sections present - itinerary, budget, accommodation, transport, food, safety
+            Score 4: All required sections present, 1-2 optional sections missing
+            Score 3: Most required sections present but some gaps
+            Score 2: Missing important sections (e.g., no budget or no itinerary)
+            Score 1: Severely incomplete - only covers 1-2 aspects
+
             ### Process
 
             1. **EXTRACT** key claims from the plan:
@@ -98,9 +112,11 @@ namespace LocalAgentTravelPlanner.Agents
                - Use `ValidateTravelTime` for schedule feasibility
                - Use `CheckGroundedness` for hotel/attraction verification
                - Use `CheckSafetyRequirements` for permits/safety
+               - Use `CheckRelevance` to verify plan matches user request
+               - Use `CheckCompleteness` to verify all sections are present
                - Use `DetermineAuditDecision` to get final verdict
 
-            3. **SCORE** each criterion with evidence
+            3. **SCORE** each criterion with evidence (all 6 criteria)
 
             4. **DECIDE** the final verdict:
                - APPROVED: All scores >= 3, no critical issues
@@ -150,6 +166,20 @@ namespace LocalAgentTravelPlanner.Agents
 
             **Reasoning:** [Why this score]
 
+            #### 5. Relevance: [X]/5 [⭐⭐⭐⭐⭐]
+            **Evidence:**
+            - [Findings from CheckRelevance]
+            - [Which user requirements were/weren't addressed]
+
+            **Reasoning:** [Why this score]
+
+            #### 6. Completeness: [X]/5 [⭐⭐⭐⭐⭐]
+            **Evidence:**
+            - [Findings from CheckCompleteness]
+            - [Which sections are present/missing]
+
+            **Reasoning:** [Why this score]
+
             ### 🎯 Issues Found
             [If any issues, list them with severity]
             1. 🔴 CRITICAL: [Issue description]
@@ -170,7 +200,7 @@ namespace LocalAgentTravelPlanner.Agents
             DECISION: [✅ APPROVED / ⚠️ FLAGGED / ❌ REJECTED / 🚫 IMPOSSIBLE]
             ═══════════════════════════════════════════════════════
 
-            **Overall Score:** [X.X]/5.0 (Average of 4 criteria)
+            **Overall Score:** [X.X]/5.0 (Average of 6 criteria)
 
             **Summary:** [1-2 sentence summary of the audit result]
 
@@ -230,6 +260,12 @@ namespace LocalAgentTravelPlanner.Agents
 
                 // Safety validation
                 AIFunctionFactory.Create(auditorTools.CheckSafetyRequirements),
+
+                // Relevance - does the plan match the user's request?
+                AIFunctionFactory.Create(auditorTools.CheckRelevance),
+
+                // Completeness - are all expected sections present?
+                AIFunctionFactory.Create(auditorTools.CheckCompleteness),
 
                 // Final decision
                 AIFunctionFactory.Create(auditorTools.DetermineAuditDecision)

@@ -439,5 +439,219 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         }
 
         #endregion
+
+        #region CheckRelevance Tests
+
+        [Fact]
+        public void CheckRelevance_WhenAllRequirementsMatched_ShouldBeHighlyRelevant()
+        {
+            // Arrange
+            var request = "3-day family trip from Kathmandu to Pokhara, budget 50000 NPR";
+            var plan = @"
+                Day 1: Arrive in Pokhara from Kathmandu by tourist bus.
+                Day 2: Family-friendly activities around Phewa Lake.
+                Day 3: Visit World Peace Pagoda, return to Kathmandu.
+                Budget Total: 45000 NPR. Great for families with children.
+            ";
+
+            // Act
+            var result = _sut.CheckRelevance(request, plan);
+
+            // Assert
+            result.Should().Contain("RELEVANT");
+            result.Should().Contain("pokhara");
+        }
+
+        [Fact]
+        public void CheckRelevance_WhenDestinationMissing_ShouldFlagIssue()
+        {
+            // Arrange
+            var request = "3-day trip to Pokhara";
+            var plan = "Day 1: Visit Kathmandu temples. Day 2: Bhaktapur tour. Day 3: Patan.";
+
+            // Act
+            var result = _sut.CheckRelevance(request, plan);
+
+            // Assert
+            result.Should().Contain("❌");
+            result.Should().Contain("pokhara");
+        }
+
+        [Fact]
+        public void CheckRelevance_WhenDurationMatches_ShouldPass()
+        {
+            // Arrange
+            var request = "2-day trip to Pokhara";
+            var plan = "Day 1: Arrive in Pokhara. Day 2: Explore Pokhara lakeside.";
+
+            // Act
+            var result = _sut.CheckRelevance(request, plan);
+
+            // Assert
+            result.Should().Contain("✅");
+            result.Should().Contain("2 days");
+        }
+
+        [Fact]
+        public void CheckRelevance_WhenTravelStyleMentioned_ShouldCheckIt()
+        {
+            // Arrange
+            var request = "luxury trip to Pokhara";
+            var plan = "Stay at a luxury 5-star resort in Pokhara with premium dining.";
+
+            // Act
+            var result = _sut.CheckRelevance(request, plan);
+
+            // Assert
+            result.Should().Contain("✅");
+            result.Should().Contain("luxury");
+        }
+
+        [Fact]
+        public void CheckRelevance_WhenTravelStyleMismatch_ShouldFlag()
+        {
+            // Arrange
+            var request = "luxury trip to Pokhara";
+            var plan = "Stay at a cheap hostel in Pokhara. Eat street food.";
+
+            // Act
+            var result = _sut.CheckRelevance(request, plan);
+
+            // Assert
+            result.Should().Contain("❌");
+            result.Should().Contain("luxury");
+        }
+
+        [Fact]
+        public void CheckRelevance_WithEmptyInput_ShouldReturnError()
+        {
+            var result = _sut.CheckRelevance("", "some plan");
+            result.Should().Contain("VALIDATION ERROR");
+        }
+
+        [Theory]
+        [InlineData("family trip to Pokhara", "Family activities in Pokhara with children", true)]
+        [InlineData("solo adventure to Pokhara", "Solo trekking adventure around Pokhara", true)]
+        [InlineData("honeymoon in Pokhara", "Romantic couple getaway in Pokhara", true)]
+        public void CheckRelevance_StyleKeywords_ShouldDetectCorrectly(
+            string request, string plan, bool shouldPass)
+        {
+            var result = _sut.CheckRelevance(request, plan);
+
+            if (shouldPass)
+                result.Should().Contain("RELEVANT");
+        }
+
+        #endregion
+
+        #region CheckCompleteness Tests
+
+        [Fact]
+        public void CheckCompleteness_WhenAllSectionsPresent_ShouldBeComprehensive()
+        {
+            // Arrange
+            var plan = @"
+                Day 1: Morning flight to Pokhara. Check into Hotel Barahi.
+                Day 2: Visit World Peace Pagoda by taxi.
+                Budget total: 45000 NPR. Hotel cost 3000/night.
+                Breakfast at lakeside cafe. Lunch at local restaurant. Dinner at Moondance.
+                Safety: Emergency police 100. Tourist police 1144.
+                Weather: 24°C partly cloudy.
+            ";
+
+            // Act
+            var result = _sut.CheckCompleteness(plan, 2);
+
+            // Assert
+            var isGoodScore = result.Contains("COMPREHENSIVE") || result.Contains("ADEQUATE");
+            isGoodScore.Should().BeTrue("Plan with all sections should be comprehensive or adequate");
+        }
+
+        [Fact]
+        public void CheckCompleteness_WhenBudgetMissing_ShouldFlagIt()
+        {
+            // Arrange
+            var plan = @"
+                Day 1: Arrive in Pokhara. Check into hotel.
+                Day 2: Visit temples by taxi.
+            ";
+
+            // Act
+            var result = _sut.CheckCompleteness(plan, 2);
+
+            // Assert
+            result.Should().Contain("❌").And.Contain("Budget");
+        }
+
+        [Fact]
+        public void CheckCompleteness_WhenDaysCovered_ShouldShowCorrectCount()
+        {
+            // Arrange
+            var plan = "Day 1: Arrive. Day 2: Explore. Day 3: Return. Budget: 5000 NPR. Hotel Lakeside. Bus from Kathmandu.";
+
+            // Act
+            var result = _sut.CheckCompleteness(plan, 3);
+
+            // Assert
+            result.Should().Contain("3 days");
+            result.Should().Contain("All days covered");
+        }
+
+        [Fact]
+        public void CheckCompleteness_WhenDaysMissing_ShouldPenalize()
+        {
+            // Arrange
+            var plan = "Day 1: Arrive. Budget: 5000 NPR. Hotel stay. Bus transport.";
+
+            // Act
+            var result = _sut.CheckCompleteness(plan, 3);
+
+            // Assert
+            result.Should().Contain("Missing");
+        }
+
+        [Fact]
+        public void CheckCompleteness_WithEmptyInput_ShouldReturnError()
+        {
+            var result = _sut.CheckCompleteness("", 3);
+            result.Should().Contain("VALIDATION ERROR");
+        }
+
+        [Fact]
+        public void CheckCompleteness_WithOnlyItinerary_ShouldBeIncomplete()
+        {
+            // Arrange - only has itinerary, missing budget/accommodation/transport
+            var plan = "Day 1: Morning sightseeing. Afternoon free time. Evening dinner.";
+
+            // Act
+            var result = _sut.CheckCompleteness(plan, 1);
+
+            // Assert
+            result.Should().Contain("❌");
+        }
+
+        [Theory]
+        [InlineData(1)]
+        [InlineData(3)]
+        [InlineData(7)]
+        public void CheckCompleteness_VariousDurations_ShouldCheckDayCoverage(int days)
+        {
+            // Arrange
+            var planBuilder = new System.Text.StringBuilder();
+            for (int d = 1; d <= days; d++)
+            {
+                planBuilder.AppendLine($"Day {d}: Activities for day {d}.");
+            }
+            planBuilder.AppendLine("Budget: 50000 NPR. Hotel Lakeside. Bus transport. Lunch at cafe.");
+
+            // Act
+            var result = _sut.CheckCompleteness(planBuilder.ToString(), days);
+
+            // Assert
+            result.Should().Contain("All days covered");
+            result.Should().Contain($"{days} days");
+        }
+
+        #endregion
     }
 }

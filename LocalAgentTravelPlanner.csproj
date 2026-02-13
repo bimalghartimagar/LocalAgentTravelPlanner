@@ -7,10 +7,12 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <!-- Exclude the Tests folder from this project -->
+  <!-- Exclude the Tests and Api folders from this project -->
   <ItemGroup>
     <Compile Remove="Tests\**" />
     <None Remove="Tests\**" />
+    <Compile Remove="Api\**" />
+    <None Remove="Api\**" />
   </ItemGroup>
 
   <ItemGroup>

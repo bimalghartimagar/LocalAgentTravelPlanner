@@ -88,17 +88,77 @@ namespace LocalAgentTravelPlanner.Services
                     "ANTHROPIC_API_KEY environment variable is not set. " +
                     "Set it with: set ANTHROPIC_API_KEY=your-api-key");
 
-            // Create Anthropic client - it implements IChatClient
             var anthropicClient = new AnthropicClient(apiKey);
-
-            // Get the IChatClient from the Anthropic client
-            // The Messages property provides IChatClient implementation
             IChatClient baseClient = anthropicClient.Messages;
 
-            // Wrap with function invocation support
+            // Wrap with middleware that injects ModelId and MaxOutputTokens into every request.
+            // Anthropic.SDK requires both per-request (unlike Ollama which bakes model
+            // into the constructor and doesn't require max_tokens). MAF doesn't pass
+            // these in ChatOptions, so we inject them via middleware.
+            var modelToInject = model;
             return new ChatClientBuilder(baseClient)
+                .Use(inner => new AnthropicOptionsInjector(inner, modelToInject))
                 .UseFunctionInvocation()
                 .Build();
+        }
+    }
+
+    /// <summary>
+    /// Middleware that ensures ChatOptions.ModelId and MaxOutputTokens are always set.
+    /// Required for Anthropic.SDK because:
+    /// 1. MAF calls IChatClient without specifying a model, but Anthropic requires it per-request.
+    /// 2. Anthropic API requires max_tokens for every request (no default fallback).
+    /// </summary>
+    internal class AnthropicOptionsInjector : DelegatingChatClient
+    {
+        private readonly string _model;
+        private const int DefaultMaxOutputTokens = 8192;
+
+        public AnthropicOptionsInjector(IChatClient inner, string model) : base(inner)
+        {
+            _model = model;
+        }
+
+        public override async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options = EnsureRequiredOptions(options);
+            return await base.GetResponseAsync(messages, options, cancellationToken);
+        }
+
+        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options = EnsureRequiredOptions(options);
+            return base.GetStreamingResponseAsync(messages, options, cancellationToken);
+        }
+
+        private ChatOptions EnsureRequiredOptions(ChatOptions? options)
+        {
+            if (options == null)
+            {
+                return new ChatOptions
+                {
+                    ModelId = _model,
+                    MaxOutputTokens = DefaultMaxOutputTokens
+                };
+            }
+
+            if (string.IsNullOrEmpty(options.ModelId))
+            {
+                options.ModelId = _model;
+            }
+
+            if (options.MaxOutputTokens == null)
+            {
+                options.MaxOutputTokens = DefaultMaxOutputTokens;
+            }
+
+            return options;
         }
     }
 }

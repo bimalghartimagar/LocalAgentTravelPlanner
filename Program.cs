@@ -101,12 +101,23 @@ internal class Program
             {
                 if (evt is AgentRunUpdateEvent e)
                 {
-                    // Stream the agent's output
-                    Console.Write(e.Data);
+                    Console.Write(e.Data?.ToString());
+                }
+                else if (evt is ExecutorFailedEvent failedEvt)
+                {
+                    var ex = failedEvt.Data as Exception;
+                    var innerMsg = ex?.InnerException?.Message ?? ex?.Message ?? "Unknown error";
+                    Console.WriteLine($"\n❌ Agent failed: {innerMsg}");
+                }
+                else if (evt is WorkflowErrorEvent errorEvt)
+                {
+                    var ex = errorEvt.Data as Exception;
+                    var innerMsg = ex?.InnerException?.Message ?? ex?.Message ?? "Unknown error";
+                    Console.WriteLine($"❌ Workflow error: {innerMsg}");
+                    break;
                 }
                 else if (evt is WorkflowOutputEvent)
                 {
-                    // Workflow complete
                     break;
                 }
             }

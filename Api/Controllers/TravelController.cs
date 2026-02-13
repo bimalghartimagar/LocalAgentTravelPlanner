@@ -171,12 +171,24 @@ public class TravelController : ControllerBase
             await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
 
             string currentAgent = "researcher";
-            int agentIndex = 0;
+            int agentIndex = -1;
             string[] agents = { "researcher", "planner", "accountant", "auditor", "aggregator" };
 
             await foreach (var evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
             {
-                if (evt is AgentRunUpdateEvent updateEvent)
+                if (evt is ExecutorInvokedEvent)
+                {
+                    agentIndex = Math.Min(agentIndex + 1, agents.Length - 1);
+                    currentAgent = agents[agentIndex];
+
+                    await SendSseEvent("agent-start", new TravelPlanProgressEvent
+                    {
+                        Agent = currentAgent,
+                        Status = "started",
+                        ProgressPercent = agentIndex * 20
+                    });
+                }
+                else if (evt is AgentRunUpdateEvent updateEvent)
                 {
                     await SendSseEvent("content", new TravelPlanProgressEvent
                     {
@@ -185,6 +197,38 @@ public class TravelController : ControllerBase
                         Content = updateEvent.Data?.ToString(),
                         ProgressPercent = (agentIndex * 20) + 10
                     });
+                }
+                else if (evt is ExecutorCompletedEvent)
+                {
+                    await SendSseEvent("agent-complete", new TravelPlanProgressEvent
+                    {
+                        Agent = currentAgent,
+                        Status = "completed",
+                        ProgressPercent = (agentIndex + 1) * 20
+                    });
+                }
+                else if (evt is ExecutorFailedEvent failedEvt)
+                {
+                    var ex = failedEvt.Data as Exception;
+                    await SendSseEvent("error", new TravelPlanProgressEvent
+                    {
+                        Agent = currentAgent,
+                        Status = "failed",
+                        Content = ex?.InnerException?.Message ?? ex?.Message ?? "Agent failed",
+                        ProgressPercent = agentIndex * 20
+                    });
+                }
+                else if (evt is WorkflowErrorEvent errorEvt)
+                {
+                    var ex = errorEvt.Data as Exception;
+                    await SendSseEvent("error", new TravelPlanProgressEvent
+                    {
+                        Agent = "system",
+                        Status = "error",
+                        Content = ex?.InnerException?.Message ?? ex?.Message ?? "Workflow error",
+                        ProgressPercent = 0
+                    });
+                    break;
                 }
                 else if (evt is WorkflowOutputEvent)
                 {

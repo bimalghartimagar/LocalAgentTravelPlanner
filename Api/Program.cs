@@ -24,19 +24,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.MapControllers();
-
-// Simple root endpoint
-app.MapGet("/", () => new
-{
-    Name = "Travel Planner API",
-    Version = "1.0",
-    Endpoints = new
-    {
-        Health = "GET /api/travel/health",
-        CreatePlan = "POST /api/travel/plan",
-        StreamPlan = "GET /api/travel/plan/stream?request=..."
-    }
-});
 
 app.Run();

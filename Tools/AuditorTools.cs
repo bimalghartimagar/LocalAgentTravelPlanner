@@ -492,5 +492,274 @@ namespace LocalAgentTravelPlanner.Tools
                 {explanation}
                 """;
         }
+
+        /// <summary>
+        /// Checks if the plan addresses what the user actually asked for.
+        ///
+        /// WHY THIS TOOL:
+        /// The plan might be well-written but completely miss the user's intent.
+        /// e.g., User asks for "family trip" but plan has solo adventure activities.
+        /// e.g., User asks for "Pokhara" but plan also includes Chitwan without being asked.
+        ///
+        /// RAGAS CONNECTION:
+        /// This maps to the "Answer Relevancy" metric - does the output actually
+        /// address the user's question/request?
+        /// </summary>
+        [Description("Checks if the travel plan addresses the user's original request by extracting and matching key requirements.")]
+        public string CheckRelevance(
+            [Description("The user's original travel request")] string userRequest,
+            [Description("The generated travel plan text")] string planText)
+        {
+            if (string.IsNullOrWhiteSpace(userRequest) || string.IsNullOrWhiteSpace(planText))
+            {
+                return "⚠️ VALIDATION ERROR: Both user request and plan text are required.";
+            }
+
+            var requestLower = userRequest.ToLower();
+            var planLower = planText.ToLower();
+
+            var checks = new List<(string Requirement, bool Found, string Detail)>();
+
+            // Check destination mentioned
+            var knownDestinations = new[] {
+                "pokhara", "kathmandu", "chitwan", "lumbini", "nagarkot",
+                "bhaktapur", "patan", "everest", "annapurna", "mustang",
+                "butwal", "biratnagar", "janakpur", "ilam"
+            };
+
+            foreach (var dest in knownDestinations)
+            {
+                if (requestLower.Contains(dest))
+                {
+                    checks.Add(("Destination: " + dest,
+                        planLower.Contains(dest),
+                        planLower.Contains(dest) ? "Destination addressed in plan" : "Requested destination NOT found in plan"));
+                }
+            }
+
+            // Check duration mentioned
+            var durationMatch = Regex.Match(requestLower, @"(\d+)\s*[-]?\s*day");
+            if (durationMatch.Success)
+            {
+                var requestedDays = int.Parse(durationMatch.Groups[1].Value);
+                var planDayMatches = Regex.Matches(planLower, @"day\s*(\d+)");
+                int planDays = planDayMatches.Count > 0
+                    ? planDayMatches.Cast<Match>().Max(m => int.Parse(m.Groups[1].Value))
+                    : 0;
+
+                // Also check "X days" pattern in plan
+                var planDurationMatch = Regex.Match(planLower, @"(\d+)\s*days?");
+                if (planDurationMatch.Success)
+                {
+                    int mentioned = int.Parse(planDurationMatch.Groups[1].Value);
+                    if (mentioned > planDays) planDays = mentioned;
+                }
+
+                bool daysMatch = planDays >= requestedDays;
+                checks.Add(($"Duration: {requestedDays} days",
+                    daysMatch,
+                    daysMatch ? $"Plan covers {planDays} days (requested {requestedDays})" : $"Plan only covers {planDays} days but {requestedDays} requested"));
+            }
+
+            // Check budget mentioned
+            var budgetMatch = Regex.Match(requestLower, @"budget\s*(?:of\s+)?(\d[\d,]*)\s*(npr|usd|\$)?", RegexOptions.IgnoreCase);
+            if (budgetMatch.Success)
+            {
+                var budgetStr = budgetMatch.Groups[1].Value.Replace(",", "");
+                bool budgetAddressed = planLower.Contains("budget") || planLower.Contains("cost") || planLower.Contains("total");
+                checks.Add(($"Budget: {budgetStr}",
+                    budgetAddressed,
+                    budgetAddressed ? "Budget/cost analysis present in plan" : "No budget analysis found in plan"));
+            }
+
+            // Check travel style keywords
+            var styleKeywords = new Dictionary<string, string[]>
+            {
+                { "family", new[] { "family", "kid", "child", "children" } },
+                { "solo", new[] { "solo", "alone", "independent" } },
+                { "luxury", new[] { "luxury", "premium", "5-star", "five star", "high-end" } },
+                { "budget", new[] { "budget", "cheap", "affordable", "frugal", "backpack" } },
+                { "adventure", new[] { "adventure", "trek", "hike", "rafting", "bungee" } },
+                { "honeymoon", new[] { "honeymoon", "romantic", "couple" } }
+            };
+
+            foreach (var style in styleKeywords)
+            {
+                if (requestLower.Contains(style.Key))
+                {
+                    bool styleAddressed = style.Value.Any(kw => planLower.Contains(kw));
+                    checks.Add(($"Travel style: {style.Key}",
+                        styleAddressed,
+                        styleAddressed ? $"Plan addresses '{style.Key}' travel style" : $"Plan does NOT address requested '{style.Key}' style"));
+                }
+            }
+
+            // Calculate score
+            int totalChecks = checks.Count;
+            int passedChecks = checks.Count(c => c.Found);
+            double relevancePercent = totalChecks > 0 ? (double)passedChecks / totalChecks * 100 : 0;
+
+            string status;
+            if (relevancePercent >= 90) status = "✅ HIGHLY RELEVANT";
+            else if (relevancePercent >= 70) status = "✅ RELEVANT";
+            else if (relevancePercent >= 50) status = "⚠️ PARTIALLY RELEVANT";
+            else status = "❌ NOT RELEVANT";
+
+            int score = relevancePercent switch
+            {
+                >= 90 => 5,
+                >= 75 => 4,
+                >= 60 => 3,
+                >= 40 => 2,
+                _ => 1
+            };
+
+            return $"""
+                🎯 RELEVANCE CHECK
+
+                User Request: "{userRequest}"
+
+                Requirements Found & Matched:
+                {string.Join("\n", checks.Select(c => $"  {(c.Found ? "✅" : "❌")} {c.Requirement} - {c.Detail}"))}
+
+                Score: {passedChecks}/{totalChecks} requirements addressed ({relevancePercent:F0}%)
+                Suggested Score: {score}/5
+
+                Status: {status}
+                """;
+        }
+
+        /// <summary>
+        /// Checks if the travel plan covers all expected sections.
+        ///
+        /// WHY THIS TOOL:
+        /// A plan might answer the right question but be missing key sections.
+        /// e.g., Has itinerary but no budget. Has budget but no accommodation details.
+        ///
+        /// RAGAS CONNECTION:
+        /// This maps to "Context Recall" / completeness - does the output cover
+        /// all aspects that a good travel plan should have?
+        /// </summary>
+        [Description("Checks if the travel plan contains all expected sections (itinerary, budget, accommodation, transport, safety).")]
+        public string CheckCompleteness(
+            [Description("The generated travel plan text")] string planText,
+            [Description("Number of days in the trip")] int expectedDays)
+        {
+            if (string.IsNullOrWhiteSpace(planText))
+            {
+                return "⚠️ VALIDATION ERROR: Plan text is required.";
+            }
+
+            var planLower = planText.ToLower();
+
+            var sections = new List<(string Section, string[] Keywords, bool Required, bool Found)>();
+
+            // Required sections
+            sections.Add(("Itinerary/Daily Plan",
+                new[] { "day 1", "day 2", "itinerary", "morning", "afternoon", "evening", "schedule" },
+                true, false));
+
+            sections.Add(("Budget/Cost Breakdown",
+                new[] { "budget", "cost", "total", "expense", "price", "npr", "usd" },
+                true, false));
+
+            sections.Add(("Accommodation",
+                new[] { "hotel", "hostel", "guesthouse", "resort", "accommodation", "stay", "lodge" },
+                true, false));
+
+            sections.Add(("Transportation",
+                new[] { "bus", "flight", "taxi", "transport", "travel", "drive", "walk" },
+                true, false));
+
+            // Optional but recommended sections
+            sections.Add(("Food & Dining",
+                new[] { "food", "restaurant", "meal", "breakfast", "lunch", "dinner", "dining", "cafe" },
+                false, false));
+
+            sections.Add(("Attractions/Activities",
+                new[] { "visit", "attraction", "activity", "museum", "temple", "lake", "trek", "tour" },
+                false, false));
+
+            sections.Add(("Safety Information",
+                new[] { "safety", "emergency", "police", "hospital", "precaution", "warning", "permit" },
+                false, false));
+
+            sections.Add(("Weather/Best Time",
+                new[] { "weather", "temperature", "rain", "season", "climate", "forecast" },
+                false, false));
+
+            // Check each section
+            for (int i = 0; i < sections.Count; i++)
+            {
+                var s = sections[i];
+                bool found = s.Keywords.Any(kw => planLower.Contains(kw));
+                sections[i] = (s.Section, s.Keywords, s.Required, found);
+            }
+
+            // Check day coverage
+            var daysCovered = new List<int>();
+            for (int d = 1; d <= expectedDays; d++)
+            {
+                if (planLower.Contains($"day {d}") || planLower.Contains($"day{d}"))
+                {
+                    daysCovered.Add(d);
+                }
+            }
+
+            bool allDaysCovered = daysCovered.Count >= expectedDays;
+
+            int requiredCount = sections.Count(s => s.Required);
+            int requiredFound = sections.Count(s => s.Required && s.Found);
+            int optionalCount = sections.Count(s => !s.Required);
+            int optionalFound = sections.Count(s => !s.Required && s.Found);
+
+            int totalFound = requiredFound + optionalFound;
+            int totalSections = sections.Count;
+            double completenessPercent = (double)totalFound / totalSections * 100;
+
+            // Factor in day coverage
+            if (!allDaysCovered)
+            {
+                completenessPercent *= 0.8; // 20% penalty for missing days
+            }
+
+            int score = completenessPercent switch
+            {
+                >= 85 => 5,
+                >= 70 => 4,
+                >= 55 => 3,
+                >= 40 => 2,
+                _ => 1
+            };
+
+            string status;
+            if (completenessPercent >= 85) status = "✅ COMPREHENSIVE";
+            else if (completenessPercent >= 70) status = "✅ ADEQUATE";
+            else if (completenessPercent >= 55) status = "⚠️ PARTIAL";
+            else status = "❌ INCOMPLETE";
+
+            return $"""
+                📋 COMPLETENESS CHECK
+
+                Required Sections:
+                {string.Join("\n", sections.Where(s => s.Required).Select(s => $"  {(s.Found ? "✅" : "❌")} {s.Section}"))}
+
+                Optional Sections:
+                {string.Join("\n", sections.Where(s => !s.Required).Select(s => $"  {(s.Found ? "✅" : "❌")} {s.Section}"))}
+
+                Day Coverage:
+                  Expected: {expectedDays} days
+                  Found: {daysCovered.Count} days ({string.Join(", ", daysCovered.Select(d => $"Day {d}"))})
+                  {(allDaysCovered ? "✅ All days covered" : $"❌ Missing {expectedDays - daysCovered.Count} day(s)")}
+
+                Summary:
+                  Required: {requiredFound}/{requiredCount}
+                  Optional: {optionalFound}/{optionalCount}
+                  Total: {totalFound}/{totalSections} ({completenessPercent:F0}%)
+                  Suggested Score: {score}/5
+
+                Status: {status}
+                """;
+        }
     }
 }
