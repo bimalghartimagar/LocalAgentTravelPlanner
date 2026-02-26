@@ -171,51 +171,80 @@ public class TravelController : ControllerBase
             await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
 
             string currentAgent = "researcher";
-            int agentIndex = -1;
-            string[] agents = { "researcher", "planner", "accountant", "auditor", "aggregator" };
+            // Map ExecutorId prefixes to UI agent names
+            var executorMap = new Dictionary<string, (string Name, int Index)>
+            {
+                ["Researcher_Agent"] = ("researcher", 0),
+                ["Planner_Agent"] = ("planner", 1),
+                ["Accountant_Agent"] = ("accountant", 2),
+                ["Auditor_Agent"] = ("auditor", 3),
+                ["Aggregator_Agent"] = ("aggregator", 4),
+            };
+
+            // Returns null for unknown executor IDs (e.g. internal tool executors)
+            string? TryResolveAgent(string executorId)
+            {
+                foreach (var kvp in executorMap)
+                {
+                    if (executorId.StartsWith(kvp.Key, StringComparison.OrdinalIgnoreCase))
+                        return kvp.Value.Name;
+                }
+                return null;
+            }
+
+            int GetAgentIndex(string agentName) =>
+                executorMap.Values.FirstOrDefault(v => v.Name == agentName).Index;
 
             await foreach (var evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
             {
-                if (evt is ExecutorInvokedEvent)
+                if (evt is ExecutorInvokedEvent invokedEvt)
                 {
-                    agentIndex = Math.Min(agentIndex + 1, agents.Length - 1);
-                    currentAgent = agents[agentIndex];
+                    var resolved = TryResolveAgent(invokedEvt.ExecutorId);
+                    if (resolved == null) continue; // Skip internal/tool executors
+                    currentAgent = resolved;
+                    var idx = GetAgentIndex(resolved);
 
                     await SendSseEvent("agent-start", new TravelPlanProgressEvent
                     {
                         Agent = currentAgent,
                         Status = "started",
-                        ProgressPercent = agentIndex * 20
+                        ProgressPercent = idx * 20
                     });
                 }
                 else if (evt is AgentRunUpdateEvent updateEvent)
                 {
+                    var idx = GetAgentIndex(currentAgent);
                     await SendSseEvent("content", new TravelPlanProgressEvent
                     {
                         Agent = currentAgent,
                         Status = "processing",
                         Content = updateEvent.Data?.ToString(),
-                        ProgressPercent = (agentIndex * 20) + 10
+                        ProgressPercent = (idx * 20) + 10
                     });
                 }
-                else if (evt is ExecutorCompletedEvent)
+                else if (evt is ExecutorCompletedEvent completedEvt)
                 {
+                    var resolved = TryResolveAgent(completedEvt.ExecutorId);
+                    if (resolved == null) continue; // Skip internal/tool executors
+                    var idx = GetAgentIndex(resolved);
                     await SendSseEvent("agent-complete", new TravelPlanProgressEvent
                     {
-                        Agent = currentAgent,
+                        Agent = resolved,
                         Status = "completed",
-                        ProgressPercent = (agentIndex + 1) * 20
+                        ProgressPercent = (idx + 1) * 20
                     });
                 }
                 else if (evt is ExecutorFailedEvent failedEvt)
                 {
+                    var resolved = TryResolveAgent(failedEvt.ExecutorId);
+                    if (resolved == null) continue; // Skip internal/tool executors
                     var ex = failedEvt.Data as Exception;
                     await SendSseEvent("error", new TravelPlanProgressEvent
                     {
-                        Agent = currentAgent,
+                        Agent = resolved,
                         Status = "failed",
                         Content = ex?.InnerException?.Message ?? ex?.Message ?? "Agent failed",
-                        ProgressPercent = agentIndex * 20
+                        ProgressPercent = GetAgentIndex(resolved) * 20
                     });
                 }
                 else if (evt is WorkflowErrorEvent errorEvt)
