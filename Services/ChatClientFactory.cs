@@ -139,25 +139,9 @@ namespace LocalAgentTravelPlanner.Services
 
         private ChatOptions EnsureRequiredOptions(ChatOptions? options)
         {
-            if (options == null)
-            {
-                return new ChatOptions
-                {
-                    ModelId = _model,
-                    MaxOutputTokens = DefaultMaxOutputTokens
-                };
-            }
-
-            if (string.IsNullOrEmpty(options.ModelId))
-            {
-                options.ModelId = _model;
-            }
-
-            if (options.MaxOutputTokens == null)
-            {
-                options.MaxOutputTokens = DefaultMaxOutputTokens;
-            }
-
+            options ??= new ChatOptions();
+            if (string.IsNullOrEmpty(options.ModelId)) options.ModelId = _model;
+            if (options.MaxOutputTokens == null) options.MaxOutputTokens = DefaultMaxOutputTokens;
             return options;
         }
     }

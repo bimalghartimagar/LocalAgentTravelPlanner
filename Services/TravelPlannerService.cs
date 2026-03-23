@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using LocalAgentTravelPlanner.Agents;
+using LocalAgentTravelPlanner.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
@@ -38,13 +39,13 @@ namespace LocalAgentTravelPlanner.Services
         /// - In development: Pass Ollama client
         /// - In tests: Pass a mock client that returns predictable responses
         /// </summary>
-        public TravelPlannerService(IChatClient chatClient)
+        public TravelPlannerService(IChatClient chatClient, ResearchTools researchTools, TravelTools travelTools)
         {
             _chatClient = chatClient;
 
             // Initialize all agents using the factory pattern
             // Factories encapsulate agent configuration (prompts, tools)
-            _researcher = ResearcherAgentFactory.Create(_chatClient);
+            _researcher = ResearcherAgentFactory.Create(_chatClient, researchTools, travelTools);
             _planner = PlannerAgentFactory.Create(_chatClient);
             _accountant = AccountantAgentFactory.Create(_chatClient);
             _auditor = AuditorAgentFactory.Create(_chatClient);

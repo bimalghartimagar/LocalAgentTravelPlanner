@@ -4,6 +4,7 @@ using System.Text.Json;
 using LocalAgentTravelPlanner.Agents;
 using LocalAgentTravelPlanner.Api.Models;
 using LocalAgentTravelPlanner.Services;
+using LocalAgentTravelPlanner.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.AspNetCore.Mvc;
@@ -16,10 +17,17 @@ namespace LocalAgentTravelPlanner.Api.Controllers;
 public class TravelController : ControllerBase
 {
     private readonly ILogger<TravelController> _logger;
+    private readonly ResearchTools _researchTools;
+    private readonly TravelTools _travelTools;
 
-    public TravelController(ILogger<TravelController> logger)
+    public TravelController(
+        ILogger<TravelController> logger,
+        ResearchTools researchTools,
+        TravelTools travelTools)
     {
         _logger = logger;
+        _researchTools = researchTools;
+        _travelTools = travelTools;
     }
 
     /// <summary>
@@ -46,7 +54,7 @@ public class TravelController : ControllerBase
             _logger.LogInformation("Using provider: {Provider}, model: {Model}", provider, model);
 
             // Create agents
-            var researcher = ResearcherAgentFactory.Create(chatClient);
+            var researcher = ResearcherAgentFactory.Create(chatClient, _researchTools, _travelTools);
             var planner = PlannerAgentFactory.Create(chatClient);
             var accountant = AccountantAgentFactory.Create(chatClient);
             var auditor = AuditorAgentFactory.Create(chatClient);
@@ -155,7 +163,7 @@ public class TravelController : ControllerBase
             });
 
             // Create agents
-            var researcher = ResearcherAgentFactory.Create(chatClient);
+            var researcher = ResearcherAgentFactory.Create(chatClient, _researchTools, _travelTools);
             var planner = PlannerAgentFactory.Create(chatClient);
             var accountant = AccountantAgentFactory.Create(chatClient);
             var auditor = AuditorAgentFactory.Create(chatClient);

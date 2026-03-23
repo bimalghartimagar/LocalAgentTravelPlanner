@@ -1,5 +1,6 @@
 ﻿using LocalAgentTravelPlanner.Agents;
 using LocalAgentTravelPlanner.Services;
+using LocalAgentTravelPlanner.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
@@ -36,10 +37,15 @@ internal class Program
             Console.WriteLine($"Model: {model}");
             Console.WriteLine();
 
+            // Create shared tools with a single HttpClient instance
+            var sharedHttp = new HttpClient();
+            var researchTools = new ResearchTools(sharedHttp);
+            var travelTools = new TravelTools(sharedHttp);
+
             // Create specialized agents using factory pattern
             Console.WriteLine("🤖 Initializing agents...");
-            
-            var researcher = ResearcherAgentFactory.Create(chatClientWithTools);
+
+            var researcher = ResearcherAgentFactory.Create(chatClientWithTools, researchTools, travelTools);
             Console.WriteLine("   ✅ Researcher Agent (destination data gathering)");
             
             var planner = PlannerAgentFactory.Create(chatClientWithTools);

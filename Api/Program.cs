@@ -1,7 +1,11 @@
+using LocalAgentTravelPlanner.Tools;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container
 builder.Services.AddControllers();
+builder.Services.AddHttpClient<ResearchTools>();
+builder.Services.AddHttpClient<TravelTools>();
 builder.Services.AddOpenApi();
 
 // Add CORS for web clients

@@ -963,7 +963,7 @@
                 } else if (i < idx) {
                     if (!step.classList.contains('completed')) {
                         step.className = 'agent-step completed';
-                        step.querySelector('.step-icon').textContent = '\u2713';
+                        step.querySelector('.step-icon').textContent = '✓';
                     }
                 }
             });
@@ -978,7 +978,7 @@
             const step = document.querySelector(`[data-agent="${agentName}"]`);
             if (step) {
                 step.className = 'agent-step completed';
-                step.querySelector('.step-icon').textContent = '\u2713';
+                step.querySelector('.step-icon').textContent = '✓';
             }
             const idx = agents.indexOf(agentName);
             const connector = document.querySelector(`.pipeline-connector[data-index="${idx}"]`);
@@ -988,7 +988,7 @@
         function markAllComplete() {
             document.querySelectorAll('.agent-step').forEach(step => {
                 step.className = 'agent-step completed';
-                step.querySelector('.step-icon').textContent = '\u2713';
+                step.querySelector('.step-icon').textContent = '✓';
             });
             document.querySelectorAll('.pipeline-connector').forEach(c => {
                 c.classList.add('filled');

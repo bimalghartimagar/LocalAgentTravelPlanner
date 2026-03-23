@@ -105,10 +105,12 @@ namespace LocalAgentTravelPlanner.Agents
         /// <summary>
         /// Creates a configured Researcher Agent with research and travel tools.
         /// </summary>
-        public static ChatClientAgent Create(IChatClient chatClient)
+        public static ChatClientAgent Create(
+            IChatClient chatClient,
+            ResearchTools researchTools,
+            TravelTools travelTools)
         {
-            var researchTools = new ResearchTools();
-            var generalTools = new TravelTools();
+            var generalTools = travelTools;
 
             var tools = new List<AITool>
             {

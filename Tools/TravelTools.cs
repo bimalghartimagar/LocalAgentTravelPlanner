@@ -1,14 +1,75 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
+using System.Globalization;
+using System.Text.Json;
 
 namespace LocalAgentTravelPlanner.Tools
 {
     /// <summary>
     /// General travel utilities and helper tools.
+    /// GetWeather uses Open-Meteo (free, no key) via Nominatim geocoding.
+    /// Other methods remain hardcoded (transport estimates, emergency contacts, visa info).
     /// </summary>
     public class TravelTools
     {
+        private readonly HttpClient _http;
+
+        public TravelTools(HttpClient http) => _http = http;
+
         [Description("Gets the current weather for a specific city.")]
-        public string GetWeather([Description("The city name, e.g., Pokhara")] string city)
+        public async Task<string> GetWeather([Description("The city name, e.g., Pokhara")] string city)
+        {
+            try
+            {
+                var coords = await GeocodingHelper.GetCoordinatesAsync(_http, city);
+                if (coords is { } c)
+                {
+                    var lat = c.Lat.ToString("F4", CultureInfo.InvariantCulture);
+                    var lon = c.Lon.ToString("F4", CultureInfo.InvariantCulture);
+                    var url = $"https://api.open-meteo.com/v1/forecast" +
+                              $"?latitude={lat}&longitude={lon}" +
+                              $"&current=temperature_2m,weather_code,precipitation" +
+                              $"&timezone=auto";
+
+                    var json = await _http.GetStringAsync(url);
+                    using var doc = JsonDocument.Parse(json);
+                    var current = doc.RootElement.GetProperty("current");
+
+                    var temp = current.GetProperty("temperature_2m").GetDouble();
+                    var code = (int)current.GetProperty("weather_code").GetDouble();
+                    var precip = current.GetProperty("precipitation").GetDouble();
+
+                    var conditions = DescribeWeatherCode(code);
+                    var rainNote = precip > 0 ? $", Precipitation: {precip:F1}mm" : "";
+
+                    return $"""
+                        Weather in {city} (source: Open-Meteo):
+                        - Temperature: {temp:F1}°C
+                        - Conditions: {conditions}{rainNote}
+                        - Tip: Check local forecast for updates throughout the day
+                        """;
+                }
+            }
+            catch { }
+
+            return FallbackGetWeather(city);
+        }
+
+        private static string DescribeWeatherCode(int code) => code switch
+        {
+            0 => "Clear sky",
+            1 => "Mainly clear",
+            2 => "Partly cloudy",
+            3 => "Overcast",
+            45 or 48 => "Foggy",
+            51 or 53 or 55 => "Drizzle",
+            61 or 63 or 65 => "Rain",
+            71 or 73 or 75 => "Snow",
+            80 or 81 or 82 => "Rain showers",
+            95 or 96 or 99 => "Thunderstorm",
+            _ => "Variable conditions"
+        };
+
+        private static string FallbackGetWeather(string city)
         {
             var cityLower = city.ToLower();
 
@@ -48,7 +109,7 @@ namespace LocalAgentTravelPlanner.Tools
             {
                 return """
                     Kathmandu to Pokhara Transport Options:
-                    
+
                     ✈️ FLIGHT (Fastest, Scenic)
                     - Price: $80-120 USD (NPR 10,700-16,000)
                     - Duration: 25 minutes
@@ -73,15 +134,15 @@ namespace LocalAgentTravelPlanner.Tools
             {
                 return """
                     Butwal to Pokhara Transport:
-                    
+
                     🚌 TOURIST BUS
                     - Price: NPR 600-800 ($4.5-6 USD)
                     - Duration: 4 hours
-                    
+
                     🚗 PRIVATE TAXI
                     - Price: NPR 5,000-7,000 ($37-52 USD)
                     - Duration: 3 hours
-                    
+
                     🚐 MICRO BUS
                     - Price: NPR 500 ($3.75 USD)
                     - Duration: 3.5 hours
@@ -138,7 +199,7 @@ namespace LocalAgentTravelPlanner.Tools
             {
                 return """
                     Nepal Emergency Contacts:
-                    
+
                     🚨 EMERGENCY NUMBERS
                     - Police: 100
                     - Tourist Police: 1144 (English speaking, 24/7)
@@ -184,28 +245,28 @@ namespace LocalAgentTravelPlanner.Tools
         {
             return $"""
                 Nepal Visa Information for {nationality} Citizens:
-                
+
                 📋 VISA ON ARRIVAL (Most nationalities)
                 - Available at: Tribhuvan Airport, land borders
                 - Processing: 15-30 minutes
-                
+
                 💰 VISA FEES
                 - 15 days: $30 USD
                 - 30 days: $50 USD
                 - 90 days: $125 USD
-                
+
                 📄 REQUIREMENTS
                 - Valid passport (6+ months validity)
                 - Passport-size photo
                 - Completed arrival form
                 - Cash (USD preferred for visa fee)
-                
+
                 ⚠️ EXCEPTIONS
                 - India, China (different rules apply)
                 - Some nationalities require pre-approval
-                
+
                 💡 TIP: Carry exact USD amount for faster processing
-                
+
                 Note: Verify current requirements at nepalimmigration.gov.np
                 """;
         }

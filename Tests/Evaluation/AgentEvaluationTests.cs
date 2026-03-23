@@ -1,6 +1,7 @@
 using FluentAssertions;
 using LocalAgentTravelPlanner.Agents;
 using LocalAgentTravelPlanner.Services;
+using LocalAgentTravelPlanner.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
@@ -32,6 +33,8 @@ public class AgentEvaluationTests : IAsyncLifetime
     private readonly ITestOutputHelper _output;
     private IChatClient? _chatClient;
     private ChatConfiguration? _evalConfiguration;
+    private ResearchTools? _researchTools;
+    private TravelTools? _travelTools;
 
     public AgentEvaluationTests(ITestOutputHelper output)
     {
@@ -47,6 +50,11 @@ public class AgentEvaluationTests : IAsyncLifetime
         // Use the same client as the judge for evaluations
         _evalConfiguration = new ChatConfiguration(_chatClient);
 
+        // Create shared tools with a single HttpClient
+        var sharedHttp = new HttpClient();
+        _researchTools = new ResearchTools(sharedHttp);
+        _travelTools = new TravelTools(sharedHttp);
+
         _output.WriteLine($"Evaluation using provider: {provider}, model: {model}");
         return Task.CompletedTask;
     }
@@ -58,7 +66,7 @@ public class AgentEvaluationTests : IAsyncLifetime
     /// </summary>
     private async Task<string> RunAgentPipelineAsync(string request)
     {
-        var researcher = ResearcherAgentFactory.Create(_chatClient!);
+        var researcher = ResearcherAgentFactory.Create(_chatClient!, _researchTools!, _travelTools!);
         var planner = PlannerAgentFactory.Create(_chatClient!);
         var accountant = AccountantAgentFactory.Create(_chatClient!);
         var auditor = AuditorAgentFactory.Create(_chatClient!);
