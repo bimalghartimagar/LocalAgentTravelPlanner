@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 
@@ -65,7 +66,10 @@ namespace LocalAgentTravelPlanner.Tools
                     return sb.ToString();
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ResearchTools] GetWeatherForecast failed for '{city}': {ex.Message}");
+            }
 
             return FallbackWeatherForecast(city, days);
         }
@@ -87,34 +91,10 @@ namespace LocalAgentTravelPlanner.Tools
 
         private static string FallbackWeatherForecast(string city, int days)
         {
-            var cityLower = city.ToLower();
-            if (cityLower.Contains("pokhara"))
-                return $"""
-                    Weather for Pokhara ({days}-day forecast):
-                    - Today: 24°C, Partly cloudy, clear views of Annapurna
-                    - Tomorrow: 22°C, Sunny, excellent visibility
-                    - Day 3: 20°C, Light rain expected in afternoon
-                    - Humidity: 65-75%
-                    - Best time for Sarangkot sunrise: 5:30 AM
-                    - Recommended: Light layers, bring rain jacket for Day 3
-                    """;
-
-            if (cityLower.Contains("kathmandu"))
-                return $"""
-                    Weather for Kathmandu ({days}-day forecast):
-                    - Today: 18°C, Hazy with light smog
-                    - Tomorrow: 20°C, Partly cloudy
-                    - Day 3: 19°C, Clear skies expected
-                    - Air Quality: Moderate (wear mask if sensitive)
-                    - Recommended: Layers for morning chill, light jacket
-                    """;
-
             return $"""
                 Weather for {city} ({days}-day forecast):
-                - Today: 22°C, Partly cloudy
-                - Tomorrow: 24°C, Sunny
-                - Day 3: 21°C, Chance of rain
-                - Recommended: Check local forecast for updates
+                - Forecast data temporarily unavailable (Open-Meteo API unreachable).
+                - Recommended: Check local forecast before departure.
                 """;
         }
 
@@ -157,7 +137,10 @@ namespace LocalAgentTravelPlanner.Tools
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ResearchTools] SearchHotels failed for '{city}': {ex.Message}");
+                }
             }
 
             return FallbackSearchHotels(city, category);
@@ -165,58 +148,16 @@ namespace LocalAgentTravelPlanner.Tools
 
         private static string FallbackSearchHotels(string city, string category)
         {
-            var cityLower = city.ToLower();
-            var categoryLower = category.ToLower();
-
-            if (cityLower.Contains("pokhara"))
-            {
-                return categoryLower switch
-                {
-                    "budget" => """
-                        Hotels in Pokhara (Budget):
-                        1. Lakeside Hostel - NPR 800/night - Dorms available, breakfast included, lake view terrace
-                        2. Traveler's Inn - NPR 1,500/night - Private room, fan, hot shower, rooftop cafe
-                        3. Mountain View Guesthouse - NPR 1,200/night - Garden view, quiet location, family run
-                        4. Pokhara Backpackers - NPR 600/night - Dorm beds, common kitchen, social atmosphere
-                        All verified and operating as of 2024.
-                        """,
-                    "mid-range" or "midrange" => """
-                        Hotels in Pokhara (Mid-range):
-                        1. Hotel Barahi - NPR 4,500/night - 3-star, pool, lake view, restaurant
-                        2. Temple Tree Resort & Spa - NPR 5,500/night - Spa, garden, excellent breakfast
-                        3. Lakefront Resort - NPR 3,800/night - Direct lake access, kayaks available
-                        4. Atithi Resort & Spa - NPR 4,000/night - Pool, spa, mountain views
-                        All verified and operating as of 2024.
-                        """,
-                    "luxury" => """
-                        Hotels in Pokhara (Luxury):
-                        1. Fish Tail Lodge - NPR 15,000/night - 5-star, iconic location, boat access only
-                        2. Tiger Mountain Pokhara Lodge - NPR 25,000/night - Boutique eco-lodge, stunning views
-                        3. Pavilions Himalayas - NPR 35,000/night - Eco-luxury, private villas, farm-to-table
-                        4. Waterfront Resort - NPR 12,000/night - Premium lakeside, infinity pool
-                        All verified and operating as of 2024.
-                        """,
-                    _ => $"Unknown category '{category}'. Use: Budget, Mid-range, or Luxury"
-                };
-            }
-
             return $"""
                 Hotels in {city} ({category}):
-                Search returned limited results. Consider using major hotel booking platforms
-                for the most up-to-date availability and pricing.
-                Estimated prices: Budget NPR 1000-2000, Mid-range NPR 3000-6000, Luxury NPR 10000+
+                Live hotel data unavailable (OPENTRIPMAP_API_KEY not set or API unreachable).
+                Use booking.com or agoda.com for current availability and pricing.
                 """;
         }
 
         [Description("Finds top attractions and things to do at a destination.")]
         public async Task<string> GetAttractions([Description("The destination city")] string city)
         {
-            var cityLower = city.ToLower();
-
-            // Use curated data for well-known Nepal destinations
-            if (cityLower.Contains("pokhara") || cityLower.Contains("kathmandu"))
-                return FallbackGetAttractions(city);
-
             if (!string.IsNullOrEmpty(_otmKey))
             {
                 try
@@ -274,8 +215,9 @@ namespace LocalAgentTravelPlanner.Tools
                                     return $"{idx + 1}. {name}\n   Categories: {placeKinds}\n" +
                                            (string.IsNullOrEmpty(extract) ? "" : $"   {extract}\n");
                                 }
-                                catch
+                                catch (Exception ex)
                                 {
+                                    Debug.WriteLine($"[ResearchTools] GetAttractions detail fetch failed for XID '{f.Xid}': {ex.Message}");
                                     return $"{idx + 1}. {f.Name}\n";
                                 }
                             });
@@ -291,7 +233,10 @@ namespace LocalAgentTravelPlanner.Tools
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ResearchTools] GetAttractions failed for '{city}': {ex.Message}");
+                }
             }
 
             return FallbackGetAttractions(city);
@@ -299,83 +244,16 @@ namespace LocalAgentTravelPlanner.Tools
 
         private static string FallbackGetAttractions(string city)
         {
-            var cityLower = city.ToLower();
-
-            if (cityLower.Contains("pokhara"))
-            {
-                return """
-                    Top Attractions in Pokhara (Verified):
-
-                    🌊 LAKES & NATURE
-                    1. Phewa Lake - Free entry, boat ride NPR 500-800/hr
-                       - Best time: Early morning or sunset
-                       - Duration: 1-2 hours
-                       - Highlight: Tal Barahi Temple on island
-
-                    2. Begnas Lake - NPR 300 boat ride, less crowded
-                       - Best time: Any time, peaceful
-                       - Duration: 2-3 hours
-                       - Highlight: Authentic local experience
-
-                    ⛰️ VIEWPOINTS
-                    3. Sarangkot - NPR 100 entry
-                       - Best time: Sunrise (5:30 AM)
-                       - Duration: 2-3 hours with hike
-                       - Highlight: Panoramic Annapurna views
-
-                    4. World Peace Pagoda - Free entry
-                       - Best time: Morning or late afternoon
-                       - Duration: 3-4 hours (including hike)
-                       - Highlight: Buddhist stupa, lake views
-
-                    🏛️ CULTURAL SITES
-                    5. International Mountain Museum - NPR 400 entry
-                       - Best time: Midday (indoor)
-                       - Duration: 2-3 hours
-                       - Highlight: Everest expedition history
-
-                    6. Gupteshwor Cave - NPR 100 entry
-                       - Best time: Any time (underground)
-                       - Duration: 1 hour
-                       - Highlight: Sacred Shiva shrine
-
-                    💦 WATERFALLS
-                    7. Davis Falls (Patale Chhango) - NPR 50 entry
-                       - Best time: After monsoon (fuller water)
-                       - Duration: 30-45 minutes
-                       - Highlight: Unique underground waterfall
-
-                    🪂 ADVENTURE
-                    8. Paragliding - NPR 8,000-12,000
-                       - Best time: 9 AM - 2 PM
-                       - Duration: 20-30 minutes flight
-                       - Highlight: Tandem flight over lake
-
-                    9. Zip Flyer - NPR 4,000-5,000
-                       - Best time: Morning
-                       - Duration: 2-3 hours total
-                       - Highlight: World's most extreme zip line
-
-                    All attractions verified and open as of 2024.
-                    """;
-            }
-
             return $"""
                 Attractions in {city}:
-                Query the local tourism board for comprehensive listings.
-                Common attractions include: temples, viewpoints, local markets, and nature spots.
+                Live attraction data unavailable (OPENTRIPMAP_API_KEY not set or API unreachable).
+                Check local tourism board or TripAdvisor for comprehensive listings.
                 """;
         }
 
         [Description("Gets local food recommendations and average meal costs.")]
         public async Task<string> GetFoodRecommendations([Description("The destination city")] string city)
         {
-            var cityLower = city.ToLower();
-
-            // Use curated data for Pokhara
-            if (cityLower.Contains("pokhara"))
-                return FallbackFoodRecommendations(city);
-
             if (!string.IsNullOrEmpty(_otmKey))
             {
                 try
@@ -414,7 +292,10 @@ namespace LocalAgentTravelPlanner.Tools
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ResearchTools] GetFoodRecommendations failed for '{city}': {ex.Message}");
+                }
             }
 
             return FallbackFoodRecommendations(city);
@@ -422,197 +303,147 @@ namespace LocalAgentTravelPlanner.Tools
 
         private static string FallbackFoodRecommendations(string city)
         {
-            var cityLower = city.ToLower();
-
-            if (cityLower.Contains("pokhara"))
-            {
-                return """
-                    Food in Pokhara (Lakeside Area):
-
-                    🍜 STREET FOOD (NPR 50-150/item)
-                    - Momos (dumplings) - NPR 80-120
-                    - Chowmein - NPR 100-150
-                    - Sel Roti (sweet bread) - NPR 30-50
-                    - Best spots: Street vendors near Barahi Chowk
-
-                    🍛 LOCAL RESTAURANTS (NPR 200-400/meal)
-                    - Dal Bhat (unlimited refills) - NPR 250-350
-                    - Thakali Set - NPR 300-400
-                    - Newari Khaja Set - NPR 350-450
-                    - Recommended: Local eateries on Baidam Road
-
-                    ☕ CAFES (NPR 300-600/meal)
-                    - Busy Bee Cafe - Excellent coffee, NPR 200-400
-                    - Moondance Restaurant - Lake view, NPR 400-800
-                    - OR2K - Mediterranean, vegetarian friendly, NPR 500-900
-                    - Caffe Concerto - Italian, NPR 600-1000
-
-                    🍽️ FINE DINING (NPR 1,000-3,000/meal)
-                    - The Harbour Restaurant - Lakeside, NPR 1,500-2,500
-                    - Nepali Kitchen - Traditional cuisine, NPR 1,000-2,000
-                    - Olive Cafe - Continental, NPR 1,200-2,000
-
-                    📊 DAILY FOOD BUDGET ESTIMATES
-                    - Frugal: NPR 500-800/day (street food + local)
-                    - Medium: NPR 1,200-2,000/day (mix of all)
-                    - High-end: NPR 3,000-5,000/day (cafes + fine dining)
-
-                    💡 TIP: Dal Bhat is the best value - unlimited rice and lentils!
-                    """;
-            }
-
             return $"""
                 Food in {city}:
-                - Street Food: NPR 50-150/meal
-                - Local Restaurant: NPR 200-400/meal
-                - Mid-range: NPR 500-1,000/meal
-                - Fine Dining: NPR 1,500-3,000/meal
+                Live restaurant data unavailable (OPENTRIPMAP_API_KEY not set or API unreachable).
+                Ask locals or check Google Maps for current dining recommendations.
                 """;
         }
 
-        [Description("Gets transportation options between two cities in Nepal.")]
-        public string GetTransportOptions(
+        [Description("Gets transportation options between two cities.")]
+        public async Task<string> GetTransportOptions(
             [Description("Origin city")] string fromCity,
             [Description("Destination city")] string toCity)
         {
-            var from = fromCity.ToLower();
-            var to = toCity.ToLower();
-
-            if (from.Contains("butwal") && to.Contains("pokhara"))
+            try
             {
-                return """
-                    Transport from Butwal to Pokhara (Verified Routes):
+                var fromCoords = await GeocodingHelper.GetCoordinatesAsync(_http, fromCity);
+                var toCoords = await GeocodingHelper.GetCoordinatesAsync(_http, toCity);
 
-                    🚌 TOURIST BUS (Recommended for comfort)
-                    - Price: NPR 600-800
-                    - Duration: 4 hours
-                    - Frequency: Multiple departures 6 AM - 2 PM
-                    - Comfort: AC, reclining seats, rest stops
-                    - Booking: Book day before at bus park
-
-                    🚐 MICRO BUS (Faster, less comfort)
-                    - Price: NPR 500
-                    - Duration: 3.5 hours
-                    - Frequency: Every 30 minutes
-                    - Comfort: Cramped but quick
-                    - Note: Leaves when full
-
-                    🚌 LOCAL BUS (Budget option)
-                    - Price: NPR 350
-                    - Duration: 4.5 hours
-                    - Frequency: Every 15 minutes
-                    - Comfort: Basic, crowded
-                    - Note: Multiple stops
-
-                    🚗 PRIVATE TAXI (Door-to-door)
-                    - Price: NPR 5,000-7,000 (whole car)
-                    - Duration: 3 hours
-                    - Flexibility: Your schedule
-                    - Comfort: Air-conditioned, private
-                    - Note: Negotiate price beforehand
-
-                    🚙 SHARED JEEP
-                    - Price: NPR 700
-                    - Duration: 3.5 hours
-                    - Frequency: Morning departures
-                    - Comfort: Moderate
-                    - Note: Usually 6-8 passengers
-
-                    📍 Route: Via Siddhartha Highway (scenic mountain views)
-                    ⚠️ Note: Morning departures recommended for safety
-                    """;
+                if (fromCoords is { } fc && toCoords is { } tc)
+                {
+                    var route = await GetOsrmRouteAsync(fc.Lat, fc.Lon, tc.Lat, tc.Lon);
+                    if (route != null)
+                        return FormatTransportOptions(fromCity, toCity, route.Value.DistanceKm, route.Value.DurationHours);
+                }
             }
-
-            if (from.Contains("kathmandu") && to.Contains("pokhara"))
+            catch (Exception ex)
             {
-                return """
-                    Transport from Kathmandu to Pokhara:
-
-                    ✈️ FLIGHT (Fastest)
-                    - Price: $80-120 USD
-                    - Duration: 25 minutes
-                    - Airlines: Buddha Air, Yeti Airlines
-                    - Highlight: Stunning Himalayan views
-
-                    🚌 TOURIST BUS
-                    - Price: NPR 800-1,200
-                    - Duration: 6-7 hours
-                    - Comfort: AC, comfortable seats
-                    - Route: Prithvi Highway
-
-                    🚗 PRIVATE CAR
-                    - Price: NPR 8,000-12,000
-                    - Duration: 5-6 hours
-                    - Flexibility: Stops for photos
-                    """;
+                Debug.WriteLine($"[ResearchTools] GetTransportOptions failed for '{fromCity}' -> '{toCity}': {ex.Message}");
             }
 
             return $"""
                 Transport from {fromCity} to {toCity}:
-                - Estimated bus fare: NPR 500-1,500
-                - Estimated private car: NPR 5,000-10,000
-                - Check local bus park for exact schedules
+                - Route data temporarily unavailable.
+                - Check local transport services, Google Maps, or Rome2Rio for schedules and pricing.
                 """;
         }
 
-        [Description("Gets safety information and travel advisories for a destination.")]
-        public string GetSafetyInfo([Description("The destination city or region")] string location)
+        private async Task<(double DistanceKm, double DurationHours)?> GetOsrmRouteAsync(
+            double lat1, double lon1, double lat2, double lon2)
         {
-            var locationLower = location.ToLower();
+            var url = $"https://router.project-osrm.org/route/v1/driving/" +
+                      $"{lon1.ToString("F4", CultureInfo.InvariantCulture)},{lat1.ToString("F4", CultureInfo.InvariantCulture)};" +
+                      $"{lon2.ToString("F4", CultureInfo.InvariantCulture)},{lat2.ToString("F4", CultureInfo.InvariantCulture)}" +
+                      $"?overview=false";
 
-            if (locationLower.Contains("pokhara") || locationLower.Contains("nepal"))
+            var json = await _http.GetStringAsync(url);
+            using var doc = JsonDocument.Parse(json);
+            var routes = doc.RootElement.GetProperty("routes");
+            if (routes.GetArrayLength() > 0)
             {
-                return """
-                    Safety Information for Pokhara, Nepal:
+                var first = routes[0];
+                var distanceM = first.GetProperty("distance").GetDouble();
+                var durationS = first.GetProperty("duration").GetDouble();
+                return (distanceM / 1000.0, durationS / 3600.0);
+            }
+            return null;
+        }
 
-                    ✅ GENERAL SAFETY
-                    - Overall: Very safe for tourists, welcoming locals
-                    - Crime: Low crime rate, petty theft rare but possible
-                    - Solo travel: Safe, including for women
+        private static string FormatTransportOptions(string from, string to, double distKm, double driveHours)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"Transport from {from} to {to} (estimated {distKm:F0} km):");
+            sb.AppendLine();
 
-                    🏥 HEALTH CONSIDERATIONS
-                    - Water: Drink only bottled/filtered water
-                    - Altitude: Pokhara is 820m (no altitude sickness risk)
-                    - Food: Eat at busy restaurants, avoid raw vegetables from street stalls
-                    - Hospitals: Western Regional Hospital, several private clinics
-
-                    ⚠️ COMMON SCAMS
-                    - Inflated taxi prices: Negotiate before getting in
-                    - Tiger balm sellers: Politely decline
-                    - "Free" tours: Usually lead to shops
-                    - TIP: Always agree on prices beforehand
-
-                    📞 EMERGENCY CONTACTS
-                    - Police: 100
-                    - Tourist Police: 1144 (English speaking)
-                    - Ambulance: 102
-                    - Fire: 101
-
-                    🚫 RESTRICTED AREAS (Require Permits)
-                    - Upper Mustang: Special permit required
-                    - Manaslu Region: Restricted, permit $70/week
-                    - Dolpa: ACAP and special permits needed
-                    - NOTE: Pokhara and surrounding areas = NO permit needed
-
-                    🏔️ TREKKING SAFETY
-                    - Register with TIMS for multi-day treks
-                    - Hire licensed guides for high-altitude treks
-                    - Carry first aid kit and emergency supplies
-
-                    💡 GENERAL TIPS
-                    - ATMs widely available in Lakeside
-                    - Mobile data: Ncell or NTC SIM cards easily available
-                    - Dress modestly when visiting temples
-                    - Remove shoes before entering homes/temples
-                    """;
+            // Flight suggestion for long distances
+            if (distKm > 200)
+            {
+                var flightMin = (int)(distKm / 800.0 * 60) + 30; // rough cruise speed + overhead
+                sb.AppendLine($"  FLIGHT (if available)");
+                sb.AppendLine($"  - Estimated flight time: ~{flightMin} minutes");
+                sb.AppendLine($"  - Check Skyscanner, Google Flights, or local airlines for routes and fares");
+                sb.AppendLine();
             }
 
+            // Bus estimate: ~1.3x driving time
+            var busHours = driveHours * 1.3;
+            sb.AppendLine($"  BUS / COACH");
+            sb.AppendLine($"  - Estimated duration: {FormatDuration(busHours)}");
+            sb.AppendLine($"  - Typically the most affordable option");
+            sb.AppendLine($"  - Check local bus operators or Rome2Rio for schedules");
+            sb.AppendLine();
+
+            // Driving / private car
+            sb.AppendLine($"  PRIVATE CAR / TAXI");
+            sb.AppendLine($"  - Estimated driving time: {FormatDuration(driveHours)}");
+            sb.AppendLine($"  - Most flexible option; negotiate fare before departure");
+            sb.AppendLine();
+
+            // Train suggestion for medium+ distances
+            if (distKm > 100)
+            {
+                sb.AppendLine($"  TRAIN (if available)");
+                sb.AppendLine($"  - Check national rail services for this route");
+                sb.AppendLine($"  - Often a comfortable option for distances over 100 km");
+                sb.AppendLine();
+            }
+
+            sb.AppendLine($"  Note: Prices vary widely by country and season. Use local booking platforms for current fares.");
+            return sb.ToString();
+        }
+
+        private static string FormatDuration(double hours)
+        {
+            var h = (int)hours;
+            var m = (int)((hours - h) * 60);
+            return h > 0 ? $"{h}h {m}m" : $"{m} minutes";
+        }
+
+        [Description("Gets general safety information and travel advisories for a destination.")]
+        public string GetSafetyInfo([Description("The destination city or region")] string location)
+        {
             return $"""
-                Safety for {location}:
-                - Research local emergency numbers
-                - Register with your embassy
-                - Check travel advisories from your home country
-                - Carry copies of important documents
+                Safety Information for {location}:
+
+                GENERAL SAFETY
+                - Check your government's travel advisory for {location} before departure
+                  (e.g., travel.state.gov, gov.uk/foreign-travel-advice, smartraveller.gov.au)
+                - Register with your country's embassy or consular service
+                - Share your itinerary with someone at home
+
+                HEALTH CONSIDERATIONS
+                - Check if vaccinations are required or recommended
+                - Verify if tap water is safe to drink; when in doubt, use bottled/filtered water
+                - Locate the nearest hospital or clinic on arrival
+                - Carry basic first aid supplies and any personal medications
+
+                PERSONAL SECURITY
+                - Keep copies of passport, visa, and travel insurance (digital + physical)
+                - Use hotel safes for valuables; carry only what you need for the day
+                - Be cautious with unsolicited offers (tours, transport, deals)
+                - Agree on taxi/transport prices before departure
+
+                MONEY & CONNECTIVITY
+                - Notify your bank of travel dates to avoid card blocks
+                - Carry some local currency in cash for areas without card acceptance
+                - Get a local SIM card or eSIM for data access and emergency calls
+                - Download offline maps for areas with limited connectivity
+
+                EMERGENCY PREPARATION
+                - Save local emergency numbers on your phone before arrival
+                - Note the address and phone number of your country's nearest embassy or consulate
+                - Consider travel insurance that covers medical evacuation
                 """;
         }
     }

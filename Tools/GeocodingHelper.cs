@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 
@@ -24,8 +25,13 @@ namespace LocalAgentTravelPlanner.Tools
                     var lon = double.Parse(first.GetProperty("lon").GetString()!, CultureInfo.InvariantCulture);
                     return (lat, lon);
                 }
+
+                Debug.WriteLine($"[GeocodingHelper] No results for city: {city}");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[GeocodingHelper] Failed to geocode '{city}': {ex.Message}");
+            }
             return null;
         }
     }
