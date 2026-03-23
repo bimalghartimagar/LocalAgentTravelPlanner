@@ -67,7 +67,7 @@ namespace LocalAgentTravelPlanner.Agents
             Score 4: Minor timing issues but overall feasible
             Score 3: Some tight connections but still doable
             Score 2: Unrealistic timing in multiple places
-            Score 1: Impossible schedule (e.g., Kathmandu to Pokhara in 30 minutes by bus)
+            Score 1: Impossible schedule (e.g., Paris to Barcelona in 30 minutes by bus)
 
             #### 3. SAFETY COMPLIANCE (Is it safe and legal?)
             Score 5: All safety considerations addressed, no restricted areas, appropriate activities

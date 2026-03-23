@@ -131,19 +131,19 @@ namespace LocalAgentTravelPlanner.Agents
 
             ### Cost Breakdown
             ```
-            🏨 Accommodation    [███████░░░] [X]%  NPR [Amount]
-            🍽️ Food & Dining    [████░░░░░░] [X]%  NPR [Amount]
-            🚌 Transportation   [██░░░░░░░░] [X]%  NPR [Amount]
-            🎯 Activities       [███░░░░░░░] [X]%  NPR [Amount]
-            💵 Miscellaneous    [█░░░░░░░░░] [X]%  NPR [Amount]
+            🏨 Accommodation    [███████░░░] [X]%  [Amount]
+            🍽️ Food & Dining    [████░░░░░░] [X]%  [Amount]
+            🚌 Transportation   [██░░░░░░░░] [X]%  [Amount]
+            🎯 Activities       [███░░░░░░░] [X]%  [Amount]
+            💵 Miscellaneous    [█░░░░░░░░░] [X]%  [Amount]
             ─────────────────────────────────────────────
-            📊 TOTAL                         NPR [Total]
+            📊 TOTAL                         [Total]
             ```
 
             **Budget Status:** [✅ Within Budget / ⚠️ Tight / ❌ Over Budget]
-            - Your Budget: NPR [Amount]
-            - Estimated Cost: NPR [Amount]
-            - [Remaining/Overage]: NPR [Amount]
+            - Your Budget: [Amount]
+            - Estimated Cost: [Amount]
+            - [Remaining/Overage]: [Amount]
 
             ---
 

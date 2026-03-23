@@ -70,14 +70,14 @@ namespace LocalAgentTravelPlanner.Agents
             ## 📅 Day [X]: [Theme/Focus of the Day]
             **Date:** [If determinable]
             **Weather Expected:** [From research]
-            **Daily Budget Estimate:** NPR [Amount]
+            **Daily Budget Estimate:** [Amount]
 
             ### 🌅 Morning (8:00 AM - 12:00 PM)
             
             **[Time] - [Activity Name]**
             - 📍 Location: [Specific location]
             - ⏱️ Duration: [How long]
-            - 💰 Cost: NPR [Amount]
+            - 💰 Cost: [Amount]
             - ✨ Why now: [Weather/timing justification]
             - 💡 Tip: [Helpful advice]
 
@@ -88,13 +88,13 @@ namespace LocalAgentTravelPlanner.Agents
 
             **[Time] - Lunch**
             - 📍 Location: [Restaurant/area from research]
-            - 💰 Budget: NPR [Amount]
+            - 💰 Budget: [Amount]
             - 🍽️ Recommendation: [Specific dish or cuisine]
 
             **[Time] - [Activity Name]**
             - 📍 Location: [Specific location]
             - ⏱️ Duration: [How long]
-            - 💰 Cost: NPR [Amount]
+            - 💰 Cost: [Amount]
             - 🚗 Getting there: [Transport from previous location]
 
             ### 🌙 Evening (5:00 PM - 9:00 PM)
@@ -104,18 +104,18 @@ namespace LocalAgentTravelPlanner.Agents
 
             **Accommodation for the Night**
             📍 [Hotel name from research]
-            💰 NPR [Amount]/night
+            💰 [Amount]/night
             ✨ Why this choice: [Brief justification based on budget/location]
 
             ---
             ### Day Summary
             | Category | Cost |
             |----------|------|
-            | Activities | NPR X |
-            | Food | NPR X |
-            | Transport | NPR X |
-            | Accommodation | NPR X |
-            | **Day Total** | **NPR X** |
+            | Activities | [Amount] |
+            | Food | [Amount] |
+            | Transport | [Amount] |
+            | Accommodation | [Amount] |
+            | **Day Total** | **[Amount]** |
 
             🎒 **Packing Note:** [Weather-appropriate clothing/gear for this day]
 
@@ -128,10 +128,10 @@ namespace LocalAgentTravelPlanner.Agents
             
             | Day | Theme | Total Cost |
             |-----|-------|------------|
-            | 1 | [Theme] | NPR X |
-            | 2 | [Theme] | NPR X |
+            | 1 | [Theme] | [Amount] |
+            | 2 | [Theme] | [Amount] |
             | ... | ... | ... |
-            | **TOTAL** | | **NPR X** |
+            | **TOTAL** | | **[Total]** |
 
             ---
 

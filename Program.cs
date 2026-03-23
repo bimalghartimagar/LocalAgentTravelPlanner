@@ -79,9 +79,9 @@ internal class Program
 
             // Display example prompts
             Console.WriteLine("📝 Example requests:");
-            Console.WriteLine("   • \"3-day family trip from Butwal to Pokhara, budget 50000 NPR\"");
-            Console.WriteLine("   • \"5-day solo adventure in Pokhara on a budget of $200\"");
-            Console.WriteLine("   • \"Luxury 3-day trip to Pokhara from Kathmandu, budget unlimited\"");
+            Console.WriteLine("   • \"5-day trip from Tokyo to Kyoto, budget $1500\"");
+            Console.WriteLine("   • \"3-day family trip from Paris to Barcelona, budget €800\"");
+            Console.WriteLine("   • \"7-day solo backpacking in Vietnam starting from Hanoi, budget $600\"");
             Console.WriteLine();
 
             Console.Write("📍 Where do you want to go?\n> ");

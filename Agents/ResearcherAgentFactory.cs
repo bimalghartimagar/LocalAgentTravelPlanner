@@ -56,15 +56,15 @@ namespace LocalAgentTravelPlanner.Agents
 
             ### 🏨 Accommodations
 
-            #### Budget Options (NPR 800-2,000/night)
+            #### Budget Options
             1. [Hotel name] - [Price] - [Features]
             2. [Hotel name] - [Price] - [Features]
 
-            #### Mid-Range Options (NPR 3,000-6,000/night)
+            #### Mid-Range Options
             1. [Hotel name] - [Price] - [Features]
             2. [Hotel name] - [Price] - [Features]
 
-            #### Luxury Options (NPR 10,000+/night)
+            #### Luxury Options
             1. [Hotel name] - [Price] - [Features]
             2. [Hotel name] - [Price] - [Features]
 
@@ -88,14 +88,14 @@ namespace LocalAgentTravelPlanner.Agents
             ### 📊 Quick Reference
             | Category | Budget | Mid-Range | Luxury |
             |----------|--------|-----------|--------|
-            | Accommodation/night | NPR X | NPR X | NPR X |
-            | Food/day | NPR X | NPR X | NPR X |
-            | Transport | NPR X | NPR X | NPR X |
+            | Accommodation/night | [Price] | [Price] | [Price] |
+            | Food/day | [Price] | [Price] | [Price] |
+            | Transport | [Price] | [Price] | [Price] |
             ---
 
             ### Critical Rules
             - ✅ Use ONLY information from your tools - NEVER make up hotels or attractions
-            - ✅ Include prices in LOCAL CURRENCY (NPR) with USD equivalent when possible
+            - ✅ Include prices in local currency with USD equivalent when possible
             - ✅ List MULTIPLE options for each category
             - ✅ Flag any safety concerns or restricted areas
             - ❌ DO NOT write the itinerary - that's the Planner's job
