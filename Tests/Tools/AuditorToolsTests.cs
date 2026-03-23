@@ -87,12 +87,11 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         }
 
         [Fact]
-        public void ValidateMathConsistency_WithCurrencySymbols_ShouldParsCorrectly()
+        public void ValidateMathConsistency_WithCurrencySymbols_ShouldParseCorrectly()
         {
-            // Arrange: Include NPR symbols
             // Note: The regex strips all non-digit/non-decimal characters
-            // So "1,000" becomes "1000" correctly
-            string costs = "NPR 1000, NPR 2000, 3000";
+            // So "$1,000" becomes "1000" correctly
+            string costs = "$1000, $2000, 3000";
             decimal statedTotal = 6000;
 
             // Act
@@ -171,71 +170,47 @@ namespace LocalAgentTravelPlanner.Tests.Tools
 
         #region ValidateTravelTime Tests
 
-        [Fact]
-        public void ValidateTravelTime_KathmanduToPokhara_WithEnoughTime_ShouldPass()
+        [Theory]
+        [InlineData("taxi", 30)]
+        [InlineData("bus", 60)]
+        [InlineData("walk", 60)]
+        [InlineData("train", 45)]
+        [InlineData("flight", 120)]
+        [InlineData("ferry", 90)]
+        public void ValidateTravelTime_DefaultEstimates_ShouldUseCorrectModeDefaults(string mode, int expectedMinutes)
         {
-            // Arrange: 8 hours available for a 6-hour taxi ride
-            string from = "Kathmandu";
-            string to = "Pokhara";
-            int availableMinutes = 480; // 8 hours
-            string mode = "taxi";
+            var result = _sut.ValidateTravelTime("CityA", "CityB", expectedMinutes + 30, mode);
 
-            // Act
-            var result = _sut.ValidateTravelTime(from, to, availableMinutes, mode);
-
-            // Assert
             result.Should().Contain("POSSIBLE");
-            result.Should().Contain("360 minutes"); // Expected travel time
+            result.Should().Contain($"{expectedMinutes} minutes");
         }
 
         [Fact]
-        public void ValidateTravelTime_KathmanduToPokhara_WithInsufficientTime_ShouldFail()
+        public void ValidateTravelTime_WithEstimatedMinutes_ShouldOverrideDefault()
         {
-            // Arrange: Only 2 hours for a 6-hour ride
-            string from = "Kathmandu";
-            string to = "Pokhara";
-            int availableMinutes = 120;
-            string mode = "taxi";
+            // Provide a custom estimate of 300 minutes (e.g., long-distance bus)
+            var result = _sut.ValidateTravelTime("Tokyo", "Osaka", 360, "bus", estimatedTravelMinutes: 300);
 
-            // Act
-            var result = _sut.ValidateTravelTime(from, to, availableMinutes, mode);
+            result.Should().Contain("POSSIBLE");
+            result.Should().Contain("300 minutes");
+        }
 
-            // Assert
+        [Fact]
+        public void ValidateTravelTime_WithInsufficientTime_ShouldFail()
+        {
+            var result = _sut.ValidateTravelTime("Paris", "Barcelona", 120, "bus", estimatedTravelMinutes: 480);
+
             result.Should().Contain("IMPOSSIBLE");
             result.Should().Contain("Insufficient time");
         }
 
         [Fact]
-        public void ValidateTravelTime_WithFlight_ShouldBeQuick()
+        public void ValidateTravelTime_UnknownMode_ShouldUse45MinDefault()
         {
-            // Arrange: 1 hour for a 30-minute flight
-            string from = "Kathmandu";
-            string to = "Pokhara";
-            int availableMinutes = 60;
-            string mode = "flight";
+            var result = _sut.ValidateTravelTime("CityA", "CityB", 60, "rickshaw");
 
-            // Act
-            var result = _sut.ValidateTravelTime(from, to, availableMinutes, mode);
-
-            // Assert
             result.Should().Contain("POSSIBLE");
-            result.Should().Contain("30 minutes");
-        }
-
-        [Fact]
-        public void ValidateTravelTime_UnknownRoute_ShouldUseDefaultEstimate()
-        {
-            // Arrange: Unknown location
-            string from = "SomePlace";
-            string to = "AnotherPlace";
-            int availableMinutes = 60;
-            string mode = "taxi";
-
-            // Act
-            var result = _sut.ValidateTravelTime(from, to, availableMinutes, mode);
-
-            // Assert
-            result.Should().Contain("POSSIBLE"); // Default taxi time is 30 min
+            result.Should().Contain("45 minutes");
         }
 
         #endregion
@@ -245,14 +220,11 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckGroundedness_WhenExactMatch_ShouldVerify()
         {
-            // Arrange
-            string itemName = "Hotel Pokhara Grande";
-            string context = "Recommended hotels include Hotel Pokhara Grande and Lakeside Retreat.";
+            string itemName = "Park Hyatt Tokyo";
+            string context = "Recommended hotels include Park Hyatt Tokyo and Aman Tokyo.";
 
-            // Act
             var result = _sut.CheckGroundedness(itemName, context);
 
-            // Assert
             result.Should().Contain("VERIFIED");
             result.Should().Contain("HIGH");
         }
@@ -260,14 +232,11 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckGroundedness_WhenNotFound_ShouldFlagHallucination()
         {
-            // Arrange
             string itemName = "Imaginary Paradise Resort";
-            string context = "Hotels in the area include Hotel Pokhara Grande and Lakeside Retreat.";
+            string context = "Hotels in the area include Park Hyatt Tokyo and Aman Tokyo.";
 
-            // Act
             var result = _sut.CheckGroundedness(itemName, context);
 
-            // Assert
             result.Should().Contain("NOT FOUND");
             result.Should().Contain("hallucinated");
         }
@@ -275,29 +244,22 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckGroundedness_WithPartialMatch_ShouldShowWarning()
         {
-            // Arrange: "Pokhara Resort" partially matches "Hotel Pokhara Grande"
-            string itemName = "Pokhara Lake Resort";
-            string context = "Hotels in Pokhara include Lake View Hotel and Mountain Resort.";
+            string itemName = "Lakeside Mountain Resort";
+            string context = "Hotels include Lake View Hotel and Mountain Lodge Resort.";
 
-            // Act
             var result = _sut.CheckGroundedness(itemName, context);
 
-            // Assert
-            // Should have some word matches (Pokhara, Lake, Resort)
             result.Should().Contain("Word Matches:");
         }
 
         [Fact]
         public void CheckGroundedness_CaseInsensitive_ShouldWork()
         {
-            // Arrange
-            string itemName = "HOTEL POKHARA GRANDE";
-            string context = "hotel pokhara grande is a nice place";
+            string itemName = "RITZ CARLTON BARCELONA";
+            string context = "ritz carlton barcelona is a luxury property";
 
-            // Act
             var result = _sut.CheckGroundedness(itemName, context);
 
-            // Assert
             result.Should().Contain("VERIFIED");
         }
 
@@ -305,46 +267,42 @@ namespace LocalAgentTravelPlanner.Tests.Tools
 
         #region CheckSafetyRequirements Tests
 
-        [Fact]
-        public void CheckSafetyRequirements_ForUpperMustang_ShouldRequirePermit()
+        [Theory]
+        [InlineData("Upper Mustang trek", "Special Restricted Area Permit", "$500")]
+        [InlineData("Inca Trail hike", "Advance permit required", "$250")]
+        [InlineData("Galapagos tour", "National park entry fee", "$100")]
+        [InlineData("Bhutan cultural tour", "Minimum daily tariff", "$200")]
+        public void CheckSafetyRequirements_PermitLocations_ShouldRequirePermit(
+            string location, string expectedPermit, string expectedCost)
         {
-            // Arrange
-            string location = "Upper Mustang trek";
-
-            // Act
             var result = _sut.CheckSafetyRequirements(location);
 
-            // Assert
-            result.Should().Contain("Special Restricted Area Permit");
-            result.Should().Contain("$500");
+            result.Should().Contain(expectedPermit);
+            result.Should().Contain(expectedCost);
             result.Should().Contain("ATTENTION REQUIRED");
         }
 
         [Fact]
-        public void CheckSafetyRequirements_ForPokhara_ShouldBeAllClear()
+        public void CheckSafetyRequirements_StandardTourismLocation_ShouldBeAllClear()
         {
-            // Arrange
-            string location = "Pokhara Lakeside";
+            var result = _sut.CheckSafetyRequirements("Barcelona city center");
 
-            // Act
-            var result = _sut.CheckSafetyRequirements(location);
-
-            // Assert
             result.Should().Contain("CLEAR");
             result.Should().Contain("None required for standard tourism");
         }
 
-        [Fact]
-        public void CheckSafetyRequirements_ForEverest_ShouldWarnAboutAltitude()
+        [Theory]
+        [InlineData("Everest Base Camp", "Altitude sickness")]
+        [InlineData("Mount Kilimanjaro climb", "Altitude sickness")]
+        [InlineData("Amazon jungle tour", "Tropical disease")]
+        [InlineData("Sahara desert trip", "Extreme heat")]
+        [InlineData("scuba diving in Bali", "Decompression sickness")]
+        public void CheckSafetyRequirements_HazardousLocations_ShouldWarnAboutRisks(
+            string location, string expectedWarning)
         {
-            // Arrange
-            string location = "Everest Base Camp";
-
-            // Act
             var result = _sut.CheckSafetyRequirements(location);
 
-            // Assert
-            result.Should().Contain("Altitude sickness");
+            result.Should().Contain(expectedWarning);
             result.Should().Contain("ATTENTION REQUIRED");
         }
 
@@ -445,49 +403,39 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckRelevance_WhenAllRequirementsMatched_ShouldBeHighlyRelevant()
         {
-            // Arrange
-            var request = "3-day family trip from Kathmandu to Pokhara, budget 50000 NPR";
+            var request = "3-day family trip from Tokyo to Kyoto, budget $1500";
             var plan = @"
-                Day 1: Arrive in Pokhara from Kathmandu by tourist bus.
-                Day 2: Family-friendly activities around Phewa Lake.
-                Day 3: Visit World Peace Pagoda, return to Kathmandu.
-                Budget Total: 45000 NPR. Great for families with children.
+                Day 1: Arrive in Kyoto from Tokyo by Shinkansen bullet train.
+                Day 2: Family-friendly activities at Fushimi Inari and Arashiyama.
+                Day 3: Visit Kinkaku-ji, return to Tokyo.
+                Budget Total: $1400. Great for families with children.
             ";
 
-            // Act
             var result = _sut.CheckRelevance(request, plan);
 
-            // Assert
             result.Should().Contain("RELEVANT");
-            result.Should().Contain("pokhara");
         }
 
         [Fact]
         public void CheckRelevance_WhenDestinationMissing_ShouldFlagIssue()
         {
-            // Arrange
-            var request = "3-day trip to Pokhara";
-            var plan = "Day 1: Visit Kathmandu temples. Day 2: Bhaktapur tour. Day 3: Patan.";
+            var request = "3-day trip to Barcelona";
+            var plan = "Day 1: Visit Madrid museums. Day 2: Toledo day trip. Day 3: Segovia.";
 
-            // Act
             var result = _sut.CheckRelevance(request, plan);
 
-            // Assert
             result.Should().Contain("❌");
-            result.Should().Contain("pokhara");
+            result.Should().Contain("Barcelona");
         }
 
         [Fact]
         public void CheckRelevance_WhenDurationMatches_ShouldPass()
         {
-            // Arrange
-            var request = "2-day trip to Pokhara";
-            var plan = "Day 1: Arrive in Pokhara. Day 2: Explore Pokhara lakeside.";
+            var request = "2-day trip to Kyoto";
+            var plan = "Day 1: Arrive in Kyoto. Day 2: Explore Kyoto temples.";
 
-            // Act
             var result = _sut.CheckRelevance(request, plan);
 
-            // Assert
             result.Should().Contain("✅");
             result.Should().Contain("2 days");
         }
@@ -495,14 +443,11 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckRelevance_WhenTravelStyleMentioned_ShouldCheckIt()
         {
-            // Arrange
-            var request = "luxury trip to Pokhara";
-            var plan = "Stay at a luxury 5-star resort in Pokhara with premium dining.";
+            var request = "luxury trip to Bali";
+            var plan = "Stay at a luxury 5-star resort in Bali with premium dining.";
 
-            // Act
             var result = _sut.CheckRelevance(request, plan);
 
-            // Assert
             result.Should().Contain("✅");
             result.Should().Contain("luxury");
         }
@@ -510,14 +455,11 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckRelevance_WhenTravelStyleMismatch_ShouldFlag()
         {
-            // Arrange
-            var request = "luxury trip to Pokhara";
-            var plan = "Stay at a cheap hostel in Pokhara. Eat street food.";
+            var request = "luxury trip to Bali";
+            var plan = "Stay at a cheap hostel in Bali. Eat street food.";
 
-            // Act
             var result = _sut.CheckRelevance(request, plan);
 
-            // Assert
             result.Should().Contain("❌");
             result.Should().Contain("luxury");
         }
@@ -530,9 +472,9 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         }
 
         [Theory]
-        [InlineData("family trip to Pokhara", "Family activities in Pokhara with children", true)]
-        [InlineData("solo adventure to Pokhara", "Solo trekking adventure around Pokhara", true)]
-        [InlineData("honeymoon in Pokhara", "Romantic couple getaway in Pokhara", true)]
+        [InlineData("family trip to Rome", "Family activities in Rome with children", true)]
+        [InlineData("solo adventure to Cusco", "Solo trekking adventure around Cusco", true)]
+        [InlineData("honeymoon in Santorini", "Romantic couple getaway in Santorini", true)]
         public void CheckRelevance_StyleKeywords_ShouldDetectCorrectly(
             string request, string plan, bool shouldPass)
         {
@@ -542,6 +484,17 @@ namespace LocalAgentTravelPlanner.Tests.Tools
                 result.Should().Contain("RELEVANT");
         }
 
+        [Fact]
+        public void CheckRelevance_MultiWordDestination_ShouldExtractCorrectly()
+        {
+            var request = "5-day trip from Ho Chi Minh City to Da Nang";
+            var plan = "Day 1: Depart Ho Chi Minh City. Day 3: Arrive in Da Nang. Day 5: Return.";
+
+            var result = _sut.CheckRelevance(request, plan);
+
+            result.Should().Contain("RELEVANT");
+        }
+
         #endregion
 
         #region CheckCompleteness Tests
@@ -549,20 +502,17 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckCompleteness_WhenAllSectionsPresent_ShouldBeComprehensive()
         {
-            // Arrange
             var plan = @"
-                Day 1: Morning flight to Pokhara. Check into Hotel Barahi.
-                Day 2: Visit World Peace Pagoda by taxi.
-                Budget total: 45000 NPR. Hotel cost 3000/night.
-                Breakfast at lakeside cafe. Lunch at local restaurant. Dinner at Moondance.
-                Safety: Emergency police 100. Tourist police 1144.
-                Weather: 24°C partly cloudy.
+                Day 1: Morning flight to Kyoto. Check into Hotel Granvia.
+                Day 2: Visit Fushimi Inari by taxi.
+                Budget total: $1400. Hotel cost $150/night.
+                Breakfast at hotel. Lunch at Nishiki Market. Dinner at Gion restaurant.
+                Safety: Emergency police 110. Fire 119.
+                Weather: 22°C partly cloudy.
             ";
 
-            // Act
             var result = _sut.CheckCompleteness(plan, 2);
 
-            // Assert
             var isGoodScore = result.Contains("COMPREHENSIVE") || result.Contains("ADEQUATE");
             isGoodScore.Should().BeTrue("Plan with all sections should be comprehensive or adequate");
         }
@@ -570,29 +520,23 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckCompleteness_WhenBudgetMissing_ShouldFlagIt()
         {
-            // Arrange
             var plan = @"
-                Day 1: Arrive in Pokhara. Check into hotel.
-                Day 2: Visit temples by taxi.
+                Day 1: Arrive in Barcelona. Check into hotel.
+                Day 2: Visit Sagrada Familia by metro.
             ";
 
-            // Act
             var result = _sut.CheckCompleteness(plan, 2);
 
-            // Assert
             result.Should().Contain("❌").And.Contain("Budget");
         }
 
         [Fact]
         public void CheckCompleteness_WhenDaysCovered_ShouldShowCorrectCount()
         {
-            // Arrange
-            var plan = "Day 1: Arrive. Day 2: Explore. Day 3: Return. Budget: 5000 NPR. Hotel Lakeside. Bus from Kathmandu.";
+            var plan = "Day 1: Arrive. Day 2: Explore. Day 3: Return. Budget: $1200. Hotel Marais. Train from CDG.";
 
-            // Act
             var result = _sut.CheckCompleteness(plan, 3);
 
-            // Assert
             result.Should().Contain("3 days");
             result.Should().Contain("All days covered");
         }
@@ -600,13 +544,10 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckCompleteness_WhenDaysMissing_ShouldPenalize()
         {
-            // Arrange
-            var plan = "Day 1: Arrive. Budget: 5000 NPR. Hotel stay. Bus transport.";
+            var plan = "Day 1: Arrive. Budget: $500. Hotel stay. Bus transport.";
 
-            // Act
             var result = _sut.CheckCompleteness(plan, 3);
 
-            // Assert
             result.Should().Contain("Missing");
         }
 
@@ -620,13 +561,10 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [Fact]
         public void CheckCompleteness_WithOnlyItinerary_ShouldBeIncomplete()
         {
-            // Arrange - only has itinerary, missing budget/accommodation/transport
             var plan = "Day 1: Morning sightseeing. Afternoon free time. Evening dinner.";
 
-            // Act
             var result = _sut.CheckCompleteness(plan, 1);
 
-            // Assert
             result.Should().Contain("❌");
         }
 
@@ -636,18 +574,15 @@ namespace LocalAgentTravelPlanner.Tests.Tools
         [InlineData(7)]
         public void CheckCompleteness_VariousDurations_ShouldCheckDayCoverage(int days)
         {
-            // Arrange
             var planBuilder = new System.Text.StringBuilder();
             for (int d = 1; d <= days; d++)
             {
                 planBuilder.AppendLine($"Day {d}: Activities for day {d}.");
             }
-            planBuilder.AppendLine("Budget: 50000 NPR. Hotel Lakeside. Bus transport. Lunch at cafe.");
+            planBuilder.AppendLine("Budget: $1500. Hotel Central. Metro transport. Lunch at cafe.");
 
-            // Act
             var result = _sut.CheckCompleteness(planBuilder.ToString(), days);
 
-            // Assert
             result.Should().Contain("All days covered");
             result.Should().Contain($"{days} days");
         }

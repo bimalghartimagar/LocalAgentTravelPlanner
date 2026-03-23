@@ -9,7 +9,7 @@ namespace LocalAgentTravelPlanner.Models
         public required string Destination { get; init; }
         public required int DurationDays { get; init; }
         public required decimal Budget { get; init; }
-        public required string Currency { get; init; }  // NPR or USD
+        public required string Currency { get; init; }  // e.g., USD, EUR, GBP, JPY
         public string? TravelStyle { get; init; }       // Frugal, Medium, Luxury
         public string? TravelerType { get; init; }      // Family, Solo, Couple
         public List<string> Interests { get; init; } = [];

@@ -28,8 +28,8 @@ namespace LocalAgentTravelPlanner.Tools
         /// Validates that the sum of cost items equals the stated total.
         ///
         /// WHY THIS TOOL:
-        /// LLMs struggle with arithmetic. A plan might claim "Total: 45,000 NPR"
-        /// but the actual sum of items is 52,000 NPR. This tool catches that.
+        /// LLMs struggle with arithmetic. A plan might claim "Total: $4,500"
+        /// but the actual sum of items is $5,200. This tool catches that.
         ///
         /// EXAMPLE:
         /// Input: "700, 3500, 1200, 500" with statedTotal = 5900
@@ -93,7 +93,7 @@ namespace LocalAgentTravelPlanner.Tools
         public string ValidateBudgetFit(
             [Description("The estimated total cost")] decimal estimatedCost,
             [Description("The user's stated budget")] decimal userBudget,
-            [Description("Currency (NPR or USD)")] string currency = "NPR")
+            [Description("Currency code (e.g., USD, EUR, GBP)")] string currency = "USD")
         {
             decimal difference = userBudget - estimatedCost;
             decimal percentUsed = userBudget != 0 ? (estimatedCost / userBudget) * 100 : 0;
@@ -152,8 +152,9 @@ namespace LocalAgentTravelPlanner.Tools
         /// Validates that travel times between locations are realistic.
         ///
         /// WHY THIS TOOL:
-        /// A plan might schedule "Leave Pokhara at 2PM, arrive Kathmandu at 2:30PM"
-        /// when the actual travel time is 6+ hours. This catches temporal impossibilities.
+        /// A plan might schedule a transfer that is temporally impossible given the
+        /// available time window. This catches such inconsistencies using reasonable
+        /// default estimates per transport mode.
         ///
         /// CONNECTION TO EVALUATION:
         /// This is similar to "logical consistency" checks in evaluation frameworks.
@@ -163,70 +164,32 @@ namespace LocalAgentTravelPlanner.Tools
             [Description("Origin location")] string fromLocation,
             [Description("Destination location")] string toLocation,
             [Description("Available time in minutes")] int availableMinutes,
-            [Description("Mode of transport (bus, taxi, flight, walk)")] string transportMode = "taxi")
+            [Description("Mode of transport (bus, taxi, flight, walk)")] string transportMode = "taxi",
+            [Description("Estimated travel time in minutes if known (0 to use default)")] int estimatedTravelMinutes = 0)
         {
-            // Known travel times (in minutes) - simplified database
-            // Keys are already lowercase; we normalize input before lookup
-            var travelTimes = new Dictionary<(string, string, string), int>
-            {
-                // Kathmandu - Pokhara routes
-                { ("kathmandu", "pokhara", "bus"), 420 },      // 7 hours
-                { ("kathmandu", "pokhara", "taxi"), 360 },     // 6 hours
-                { ("kathmandu", "pokhara", "flight"), 30 },    // 30 min flight
-                { ("pokhara", "kathmandu", "bus"), 420 },
-                { ("pokhara", "kathmandu", "taxi"), 360 },
-                { ("pokhara", "kathmandu", "flight"), 30 },
-
-                // Butwal - Pokhara routes
-                { ("butwal", "pokhara", "bus"), 180 },         // 3 hours
-                { ("butwal", "pokhara", "taxi"), 150 },        // 2.5 hours
-                { ("pokhara", "butwal", "bus"), 180 },
-                { ("pokhara", "butwal", "taxi"), 150 },
-
-                // Within Pokhara
-                { ("lakeside", "phewa lake", "walk"), 10 },
-                { ("lakeside", "world peace pagoda", "taxi"), 30 },
-                { ("lakeside", "world peace pagoda", "walk"), 90 },
-                { ("lakeside", "sarangkot", "taxi"), 45 },
-                { ("lakeside", "davis falls", "taxi"), 20 },
-                { ("pokhara airport", "lakeside", "taxi"), 20 },
-
-                // Within Kathmandu
-                { ("thamel", "pashupatinath", "taxi"), 30 },
-                { ("thamel", "swayambhunath", "taxi"), 20 },
-                { ("thamel", "boudhanath", "taxi"), 35 },
-                { ("kathmandu airport", "thamel", "taxi"), 30 },
-            };
-
-            var fromNorm = fromLocation.ToLower().Trim();
-            var toNorm = toLocation.ToLower().Trim();
             var modeNorm = transportMode.ToLower().Trim();
 
-            // Try to find travel time
-            int? estimatedMinutes = null;
-
-            if (travelTimes.TryGetValue((fromNorm, toNorm, modeNorm), out var exactTime))
-            {
-                estimatedMinutes = exactTime;
-            }
-            else
-            {
-                // Try to estimate based on mode
-                estimatedMinutes = modeNorm switch
+            // Use caller-provided estimate if available, otherwise apply mode-based defaults.
+            // These defaults represent typical intra-city or short-distance transfers;
+            // for intercity routes the LLM should provide an estimate from the research data.
+            int estimatedMinutes = estimatedTravelMinutes > 0
+                ? estimatedTravelMinutes
+                : modeNorm switch
                 {
-                    "walk" => 60,      // Default 1 hour walk
-                    "taxi" => 30,      // Default 30 min taxi
-                    "bus" => 60,       // Default 1 hour bus
-                    "flight" => 45,    // Default 45 min including airport time
+                    "walk" or "walking" => 60,
+                    "taxi" or "car" or "drive" or "rideshare" => 30,
+                    "bus" or "coach" => 60,
+                    "train" or "rail" or "metro" or "subway" => 45,
+                    "flight" or "plane" => 120,  // includes airport overhead
+                    "ferry" or "boat" => 90,
                     _ => 45
                 };
-            }
 
             bool isPossible = availableMinutes >= estimatedMinutes;
-            int buffer = availableMinutes - estimatedMinutes.Value;
+            int buffer = availableMinutes - estimatedMinutes;
 
             return $"""
-                🕐 TRAVEL TIME VALIDATION
+                TRAVEL TIME VALIDATION
 
                 Route: {fromLocation} → {toLocation}
                 Transport Mode: {transportMode}
@@ -236,7 +199,7 @@ namespace LocalAgentTravelPlanner.Tools
 
                 Buffer: {(buffer >= 0 ? "+" : "")}{buffer} minutes
 
-                Result: {(isPossible ? "✅ POSSIBLE - Adequate time for travel" : "❌ IMPOSSIBLE - Insufficient time for travel")}
+                Result: {(isPossible ? "POSSIBLE - Adequate time for travel" : "IMPOSSIBLE - Insufficient time for travel")}
                 {(isPossible ? "" : $"\nIssue: Need at least {estimatedMinutes} minutes, but only {availableMinutes} available")}
                 """;
         }
@@ -322,43 +285,57 @@ namespace LocalAgentTravelPlanner.Tools
         }
 
         /// <summary>
-        /// Checks if a location has safety concerns or requires permits.
+        /// Checks if a location or activity has safety concerns or requires permits.
         ///
         /// WHY THIS TOOL:
-        /// Some destinations require special permits (e.g., Upper Mustang in Nepal).
-        /// Some activities might be dangerous in certain seasons.
-        /// The Auditor should flag these.
+        /// Some destinations require permits, visas, or special clearances.
+        /// Some activities carry inherent risks (altitude, wildlife, extreme sports).
+        /// The Auditor should flag these so the plan acknowledges them.
         /// </summary>
-        [Description("Checks safety concerns and permit requirements for a location.")]
+        [Description("Checks safety concerns and permit requirements for a location or activity.")]
         public string CheckSafetyRequirements(
-            [Description("Location to check")] string location)
+            [Description("Location or activity to check")] string location)
         {
             var locationLower = location.ToLower().Trim();
 
-            // Locations requiring permits
+            // Activities/locations that commonly require permits or advance booking
             var permitRequired = new Dictionary<string, string>
             {
-                { "upper mustang", "Special Restricted Area Permit ($500) + ACAP permit required" },
-                { "dolpo", "Special Restricted Area Permit ($500) required" },
-                { "manaslu", "Restricted Area Permit ($70-100) + MCAP permit required" },
-                { "kanchenjunga", "Restricted Area Permit required" },
-                { "upper dolpa", "Special permit ($500/10 days) required" }
+                // Trekking permits
+                { "upper mustang", "Nepal: Special Restricted Area Permit ($500) + ACAP permit required" },
+                { "manaslu", "Nepal: Restricted Area Permit ($70-100) + MCAP permit required" },
+                { "inca trail", "Peru: Advance permit required (sells out months ahead, ~$250)" },
+                { "mount kilimanjaro", "Tanzania: Park entry fees ($70-100/day) + licensed guide mandatory" },
+                { "torres del paine", "Chile: Advance campsite/refugio reservation required in peak season" },
+                { "galapagos", "Ecuador: National park entry fee ($100) + guided tour mandatory" },
+                // Restricted/controlled areas
+                { "north korea", "Guided tour through authorized agency mandatory" },
+                { "bhutan", "Minimum daily tariff ($200-250/day) + licensed tour operator required" },
+                { "chernobyl", "Ukraine: Authorized guided tour only" },
+                { "mount athos", "Greece: Special permit (diamonitirion) required; limited daily visitors" },
+                { "sentinel island", "India: Strictly prohibited — illegal to visit" },
             };
 
-            // Locations with safety concerns
+            // Activities/environments with inherent safety concerns
             var safetyConcerns = new Dictionary<string, string>
             {
-                { "everest", "Altitude sickness risk above 3000m. Acclimatization required." },
-                { "annapurna", "Altitude concerns on high passes. Weather can change rapidly." },
-                { "langtang", "Earthquake damage in some areas. Check current trail conditions." },
-                { "chitwan", "Wildlife encounters possible. Follow guide instructions strictly." }
-            };
-
-            // Seasonal concerns
-            var seasonalWarnings = new Dictionary<string, string>
-            {
-                { "monsoon", "June-September: Heavy rains, landslides, leeches on trails" },
-                { "winter", "December-February: Snow at high altitude, some passes closed" }
+                // Altitude
+                { "everest", "Altitude sickness risk above 3000m. Acclimatization schedule required." },
+                { "annapurna", "High-altitude passes. Weather can change rapidly." },
+                { "kilimanjaro", "Altitude sickness risk. Acclimatization days recommended." },
+                { "machu picchu", "Moderate altitude (2430m). Some visitors experience mild symptoms." },
+                { "la paz", "High altitude city (3640m). Take it easy on arrival day." },
+                { "lhasa", "High altitude (3650m). Acclimatization required before excursions." },
+                // Wildlife/nature
+                { "safari", "Wildlife encounters. Follow guide instructions strictly. Stay in vehicle." },
+                { "scuba", "Decompression sickness risk. Ensure PADI/SSI certification. No flying within 24h." },
+                { "bungee", "Extreme sport. Verify operator certifications and safety record." },
+                { "paragliding", "Weather-dependent. Use licensed operators only." },
+                { "white water", "Rafting risk levels vary (Class I–V). Match to experience level." },
+                // Regional
+                { "amazon", "Tropical disease risk. Malaria prophylaxis may be required." },
+                { "sahara", "Extreme heat and dehydration risk. Travel with experienced guide." },
+                { "arctic", "Extreme cold, polar bear risk. Specialized gear and guide required." },
             };
 
             var issues = new List<string>();
@@ -499,7 +476,7 @@ namespace LocalAgentTravelPlanner.Tools
         /// WHY THIS TOOL:
         /// The plan might be well-written but completely miss the user's intent.
         /// e.g., User asks for "family trip" but plan has solo adventure activities.
-        /// e.g., User asks for "Pokhara" but plan also includes Chitwan without being asked.
+        /// e.g., User asks for "Kyoto" but plan covers Tokyo instead.
         ///
         /// RAGAS CONNECTION:
         /// This maps to the "Answer Relevancy" metric - does the output actually
@@ -520,21 +497,36 @@ namespace LocalAgentTravelPlanner.Tools
 
             var checks = new List<(string Requirement, bool Found, string Detail)>();
 
-            // Check destination mentioned
-            var knownDestinations = new[] {
-                "pokhara", "kathmandu", "chitwan", "lumbini", "nagarkot",
-                "bhaktapur", "patan", "everest", "annapurna", "mustang",
-                "butwal", "biratnagar", "janakpur", "ilam"
+            // Extract destination names from the request dynamically.
+            // Matches "to <Place>", "from <Place>", "in <Place>", or "visit <Place>" patterns
+            // where <Place> is one or more capitalized words (e.g., "Kyoto", "Ho Chi Minh City").
+            var destinationPatterns = new[]
+            {
+                @"(?:to|from|in|visit|visiting)\s+((?:[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*))",
+                @"trip\s+(?:to|from|in)\s+((?:[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*))"
             };
 
-            foreach (var dest in knownDestinations)
+            var extractedDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pattern in destinationPatterns)
             {
-                if (requestLower.Contains(dest))
+                foreach (Match m in Regex.Matches(userRequest, pattern))
                 {
-                    checks.Add(("Destination: " + dest,
-                        planLower.Contains(dest),
-                        planLower.Contains(dest) ? "Destination addressed in plan" : "Requested destination NOT found in plan"));
+                    var dest = m.Groups[1].Value.Trim();
+                    // Skip common false positives
+                    if (!string.Equals(dest, "Day", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(dest, "Budget", StringComparison.OrdinalIgnoreCase))
+                    {
+                        extractedDestinations.Add(dest);
+                    }
                 }
+            }
+
+            foreach (var dest in extractedDestinations)
+            {
+                var destLower = dest.ToLower();
+                checks.Add(("Destination: " + dest,
+                    planLower.Contains(destLower),
+                    planLower.Contains(destLower) ? "Destination addressed in plan" : "Requested destination NOT found in plan"));
             }
 
             // Check duration mentioned
@@ -562,7 +554,7 @@ namespace LocalAgentTravelPlanner.Tools
             }
 
             // Check budget mentioned
-            var budgetMatch = Regex.Match(requestLower, @"budget\s*(?:of\s+)?(\d[\d,]*)\s*(npr|usd|\$)?", RegexOptions.IgnoreCase);
+            var budgetMatch = Regex.Match(requestLower, @"budget\s*(?:of\s+)?(?:[$€£¥₹]?\s*)?(\d[\d,]*)\s*(?:npr|usd|eur|gbp|jpy|inr|[$€£¥₹])?", RegexOptions.IgnoreCase);
             if (budgetMatch.Success)
             {
                 var budgetStr = budgetMatch.Groups[1].Value.Replace(",", "");
@@ -660,7 +652,7 @@ namespace LocalAgentTravelPlanner.Tools
                 true, false));
 
             sections.Add(("Budget/Cost Breakdown",
-                new[] { "budget", "cost", "total", "expense", "price", "npr", "usd" },
+                new[] { "budget", "cost", "total", "expense", "price", "usd", "eur", "$", "€", "£" },
                 true, false));
 
             sections.Add(("Accommodation",

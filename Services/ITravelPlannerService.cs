@@ -16,7 +16,7 @@ namespace LocalAgentTravelPlanner.Services
         /// <summary>
         /// Processes a travel request through the full agent pipeline.
         /// </summary>
-        /// <param name="request">User's travel request (e.g., "3-day trip to Pokhara, budget 50000 NPR")</param>
+        /// <param name="request">User's travel request (e.g., "3-day trip to Kyoto, budget $800")</param>
         /// <param name="cancellationToken">Cancellation token for async operations</param>
         /// <returns>The complete travel plan response</returns>
         Task<TravelPlanResponse> PlanTravelAsync(string request, CancellationToken cancellationToken = default);

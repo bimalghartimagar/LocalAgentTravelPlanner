@@ -9,7 +9,7 @@ public class TravelPlanRequest
 {
     /// <summary>
     /// Natural language description of the trip.
-    /// Example: "3-day family trip from Butwal to Pokhara, budget 50000 NPR"
+    /// Example: "3-day family trip from Tokyo to Kyoto, budget $1500"
     /// </summary>
     [Required]
     [MinLength(10, ErrorMessage = "Request must be at least 10 characters")]

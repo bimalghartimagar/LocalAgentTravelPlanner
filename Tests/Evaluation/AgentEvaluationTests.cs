@@ -184,7 +184,7 @@ public class AgentEvaluationTests : IAsyncLifetime
     [Trait("Category", "Integration")]
     public async Task FullPipeline_ShouldProduceCoherentOutput()
     {
-        var request = "2-day trip to Pokhara from Kathmandu, budget 30000 NPR";
+        var request = "2-day trip to Kyoto from Tokyo, budget $800";
 
         _output.WriteLine($"Running agent pipeline for: {request}");
         var agentOutput = await RunAgentPipelineAsync(request);
@@ -209,7 +209,7 @@ public class AgentEvaluationTests : IAsyncLifetime
     [Trait("Category", "Integration")]
     public async Task FullPipeline_ShouldBeRelevantAndComplete()
     {
-        var request = "3-day family trip from Butwal to Pokhara, budget 50000 NPR";
+        var request = "3-day family trip from Paris to Barcelona, budget €800";
 
         _output.WriteLine($"Running agent pipeline for: {request}");
         var agentOutput = await RunAgentPipelineAsync(request);
@@ -240,33 +240,33 @@ public class AgentEvaluationTests : IAsyncLifetime
     [Trait("Category", "Integration")]
     public async Task EvaluatePrerecordedOutput_ShouldScoreWell()
     {
-        var request = "2-day budget trip to Pokhara from Kathmandu";
+        var request = "2-day budget trip to Kyoto from Tokyo";
         var prerecordedOutput = @"
-# Pokhara Travel Plan - 2 Days
+# Kyoto Travel Plan - 2 Days
 
-## Day 1: Arrival and Lakeside Exploration
-- **Morning**: Take tourist bus from Kathmandu (NPR 800, 6-7 hours)
-- **Afternoon**: Check into Lakeside Hostel (NPR 1,200/night), explore Phewa Lake
-- **Evening**: Dinner at local restaurant - Dal Bhat (NPR 300)
+## Day 1: Arrival and Temple Exploration
+- **Morning**: Take Shinkansen bullet train from Tokyo ($130, 2h 15m)
+- **Afternoon**: Check into K's House Kyoto ($35/night), explore Fushimi Inari Shrine (free)
+- **Evening**: Dinner at Nishiki Market ($12)
 
-## Day 2: Sarangkot and Sightseeing
-- **Early Morning**: Sunrise at Sarangkot (NPR 100 entry, taxi NPR 500)
-- **Morning**: Visit World Peace Pagoda (free entry)
-- **Afternoon**: International Mountain Museum (NPR 400)
-- **Evening**: Return to Kathmandu by tourist bus (NPR 800)
+## Day 2: Culture and Gardens
+- **Early Morning**: Visit Kinkaku-ji Golden Pavilion ($5 entry)
+- **Morning**: Arashiyama Bamboo Grove (free entry)
+- **Afternoon**: Nijo Castle ($8 entry)
+- **Evening**: Return to Tokyo by Shinkansen ($130)
 
 ## Budget Summary
-| Category | Amount (NPR) |
+| Category | Amount (USD) |
 |----------|-------------|
-| Transport | 2,100 |
-| Accommodation | 1,200 |
-| Food | 900 |
-| Activities | 500 |
-| **Total** | **4,700** |
+| Transport | 260 |
+| Accommodation | 35 |
+| Food | 40 |
+| Activities | 13 |
+| **Total** | **$348** |
 
 ## Safety Notes
-- Drink bottled water only
-- Emergency: Tourist Police 1144
+- Japan is very safe for tourists
+- Emergency: Police 110, Fire/Ambulance 119
 ";
 
         _output.WriteLine("Evaluating pre-recorded output...");
