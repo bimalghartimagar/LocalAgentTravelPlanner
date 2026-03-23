@@ -24,6 +24,15 @@ namespace LocalAgentTravelPlanner.Services
     /// </summary>
     public class TravelPlannerService : ITravelPlannerService
     {
+        private static readonly Dictionary<string, string> ExecutorMap = new()
+        {
+            ["Researcher_Agent"] = "Researcher",
+            ["Planner_Agent"] = "Planner",
+            ["Accountant_Agent"] = "Accountant",
+            ["Auditor_Agent"] = "Auditor",
+            ["Aggregator_Agent"] = "Aggregator",
+        };
+
         private readonly IChatClient _chatClient;
         private readonly ChatClientAgent _researcher;
         private readonly ChatClientAgent _planner;
@@ -72,11 +81,33 @@ namespace LocalAgentTravelPlanner.Services
                 StreamingRun run = await InProcessExecution.StreamAsync(workflow, request);
                 await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
 
+                string? agentError = null;
+                var completedAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
                 await foreach (WorkflowEvent evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
                 {
                     if (evt is AgentRunUpdateEvent e)
                     {
                         outputBuilder.Append(e.Data);
+                    }
+                    else if (evt is ExecutorCompletedEvent completedEvt)
+                    {
+                        var resolved = TryResolveAgent(completedEvt.ExecutorId);
+                        if (resolved != null)
+                        {
+                            completedAgents.Add(resolved);
+                        }
+                    }
+                    else if (evt is ExecutorFailedEvent failedEvt)
+                    {
+                        var ex = failedEvt.Data as Exception;
+                        agentError = $"Agent {failedEvt.ExecutorId} failed: {ex?.InnerException?.Message ?? ex?.Message ?? "unknown error"}";
+                    }
+                    else if (evt is WorkflowErrorEvent errorEvt)
+                    {
+                        var ex = errorEvt.Data as Exception;
+                        agentError = $"Workflow error: {ex?.InnerException?.Message ?? ex?.Message ?? "unknown error"}";
+                        break;
                     }
                     else if (evt is WorkflowOutputEvent)
                     {
@@ -86,12 +117,16 @@ namespace LocalAgentTravelPlanner.Services
 
                 stopwatch.Stop();
 
+                var output = outputBuilder.ToString();
+                var success = agentError == null && !string.IsNullOrWhiteSpace(output);
+
                 return new TravelPlanResponse
                 {
-                    Success = true,
-                    TravelPlan = outputBuilder.ToString(),
+                    Success = success,
+                    TravelPlan = output,
+                    Error = agentError,
                     ProcessingTime = stopwatch.Elapsed,
-                    AgentsUsed = 5 // Researcher, Planner, Accountant, Auditor, Aggregator
+                    AgentsUsed = completedAgents.Count
                 };
             }
             catch (Exception ex)
@@ -114,7 +149,9 @@ namespace LocalAgentTravelPlanner.Services
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             var agentNames = new[] { "Researcher", "Planner", "Accountant", "Auditor", "Aggregator" };
-            var currentAgentIndex = 0;
+            var currentAgent = agentNames[0];
+
+            int GetAgentIndex(string name) => Array.IndexOf(agentNames, name);
 
             // Build the sequential workflow
             var workflow = AgentWorkflowBuilder.BuildSequential(
@@ -123,7 +160,7 @@ namespace LocalAgentTravelPlanner.Services
 
             yield return new TravelPlanProgress
             {
-                CurrentAgent = agentNames[currentAgentIndex],
+                CurrentAgent = currentAgent,
                 Status = ProgressStatus.Starting,
                 ProgressPercent = 0
             };
@@ -131,21 +168,69 @@ namespace LocalAgentTravelPlanner.Services
             StreamingRun run = await InProcessExecution.StreamAsync(workflow, request);
             await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
 
-            var partialOutput = new System.Text.StringBuilder();
-
             await foreach (WorkflowEvent evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
             {
-                if (evt is AgentRunUpdateEvent e)
+                if (evt is ExecutorInvokedEvent invokedEvt)
                 {
-                    partialOutput.Append(e.Data);
+                    var resolved = TryResolveAgent(invokedEvt.ExecutorId);
+                    if (resolved == null) continue;
+                    currentAgent = resolved;
 
                     yield return new TravelPlanProgress
                     {
-                        CurrentAgent = agentNames[Math.Min(currentAgentIndex, agentNames.Length - 1)],
+                        CurrentAgent = currentAgent,
+                        Status = ProgressStatus.Starting,
+                        ProgressPercent = (GetAgentIndex(currentAgent) * 100) / agentNames.Length
+                    };
+                }
+                else if (evt is AgentRunUpdateEvent e)
+                {
+                    yield return new TravelPlanProgress
+                    {
+                        CurrentAgent = currentAgent,
                         Status = ProgressStatus.Processing,
                         PartialOutput = e.Data?.ToString(),
-                        ProgressPercent = (currentAgentIndex * 100) / agentNames.Length
+                        ProgressPercent = (GetAgentIndex(currentAgent) * 100) / agentNames.Length
                     };
+                }
+                else if (evt is ExecutorCompletedEvent completedEvt)
+                {
+                    var resolved = TryResolveAgent(completedEvt.ExecutorId);
+                    if (resolved == null) continue;
+
+                    yield return new TravelPlanProgress
+                    {
+                        CurrentAgent = resolved,
+                        Status = ProgressStatus.Completed,
+                        ProgressPercent = ((GetAgentIndex(resolved) + 1) * 100) / agentNames.Length
+                    };
+                }
+                else if (evt is ExecutorFailedEvent failedEvt)
+                {
+                    var resolved = TryResolveAgent(failedEvt.ExecutorId);
+                    if (resolved == null) continue;
+                    var ex = failedEvt.Data as Exception;
+
+                    yield return new TravelPlanProgress
+                    {
+                        CurrentAgent = resolved,
+                        Status = ProgressStatus.Error,
+                        PartialOutput = ex?.InnerException?.Message ?? ex?.Message ?? "Agent failed",
+                        ProgressPercent = (GetAgentIndex(resolved) * 100) / agentNames.Length
+                    };
+                }
+                else if (evt is WorkflowErrorEvent errorEvt)
+                {
+                    var ex = errorEvt.Data as Exception;
+
+                    yield return new TravelPlanProgress
+                    {
+                        CurrentAgent = currentAgent,
+                        Status = ProgressStatus.Error,
+                        PartialOutput = ex?.InnerException?.Message ?? ex?.Message ?? "Workflow error",
+                        ProgressPercent = 0
+                    };
+                    break;
                 }
                 else if (evt is WorkflowOutputEvent)
                 {
@@ -158,6 +243,17 @@ namespace LocalAgentTravelPlanner.Services
                     break;
                 }
             }
+        }
+
+        private static string? TryResolveAgent(string executorId)
+        {
+            foreach (var kvp in ExecutorMap)
+            {
+                if (executorId.StartsWith(kvp.Key, StringComparison.OrdinalIgnoreCase))
+                    return kvp.Value;
+            }
+
+            return null;
         }
     }
 }

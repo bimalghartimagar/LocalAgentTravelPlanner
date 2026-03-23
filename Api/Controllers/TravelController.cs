@@ -70,11 +70,26 @@ public class TravelController : ControllerBase
             StreamingRun run = await InProcessExecution.StreamAsync(workflow, request.Request);
             await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
 
+            string? agentError = null;
+
             await foreach (var evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
             {
                 if (evt is AgentRunUpdateEvent updateEvent)
                 {
                     outputBuilder.Append(updateEvent.Data);
+                }
+                else if (evt is ExecutorFailedEvent failedEvt)
+                {
+                    var ex = failedEvt.Data as Exception;
+                    agentError = $"Agent {failedEvt.ExecutorId} failed: {ex?.InnerException?.Message ?? ex?.Message ?? "unknown error"}";
+                    _logger.LogError(ex, "Agent failed: {ExecutorId}", failedEvt.ExecutorId);
+                }
+                else if (evt is WorkflowErrorEvent errorEvt)
+                {
+                    var ex = errorEvt.Data as Exception;
+                    agentError = $"Workflow error: {ex?.InnerException?.Message ?? ex?.Message ?? "unknown error"}";
+                    _logger.LogError(ex, "Workflow error");
+                    break;
                 }
                 else if (evt is WorkflowOutputEvent)
                 {
@@ -84,14 +99,22 @@ public class TravelController : ControllerBase
 
             stopwatch.Stop();
 
-            return Ok(new TravelPlanApiResponse
+            var output = outputBuilder.ToString();
+            var success = agentError == null && !string.IsNullOrWhiteSpace(output);
+
+            var response = new TravelPlanApiResponse
             {
-                Success = true,
-                TravelPlan = outputBuilder.ToString(),
+                Success = success,
+                TravelPlan = output,
+                Error = agentError,
                 ProcessingTimeSeconds = stopwatch.Elapsed.TotalSeconds,
                 Provider = provider.ToString(),
                 Model = model
-            });
+            };
+
+            return success
+                ? Ok(response)
+                : StatusCode(StatusCodes.Status500InternalServerError, response);
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("ANTHROPIC_API_KEY"))
         {
@@ -326,7 +349,7 @@ public class TravelController : ControllerBase
             Timestamp = DateTime.UtcNow,
             Providers = new
             {
-                Ollama = "available (requires local server)",
+                Ollama = "configured (local server required)",
                 Anthropic = anthropicAvailable ? "available" : "not configured"
             }
         });
