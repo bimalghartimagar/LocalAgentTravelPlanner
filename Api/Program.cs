@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using LocalAgentTravelPlanner.Api.Middleware;
 using LocalAgentTravelPlanner.Tools;
+using Microsoft.AspNetCore.HttpOverrides;
 using Serilog;
 
 // Bootstrap logger for startup errors (before DI is available)
@@ -63,6 +64,13 @@ try
     });
 
     var app = builder.Build();
+
+    // Trust forwarded headers from nginx (X-Forwarded-For, X-Forwarded-Proto)
+    // Required for correct client IP in rate limiting and HTTPS detection
+    app.UseForwardedHeaders(new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+    });
 
     // Request logging — logs method, path, status code, elapsed time
     app.UseSerilogRequestLogging();

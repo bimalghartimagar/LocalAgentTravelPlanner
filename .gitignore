@@ -16,6 +16,7 @@ bin/
 .api-key
 .env
 .env.*
+!.env.example
 appsettings.*.local.json
 appsettings.Local.json
 appsettings.Production.json
