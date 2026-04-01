@@ -12,6 +12,15 @@ try
 {
     var builder = WebApplication.CreateBuilder(args);
 
+    // Bridge appsettings values into env vars so ChatClientFactory
+    // (in the core project, no access to IConfiguration) can read them
+    var anthropicKey = builder.Configuration["ANTHROPIC_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(anthropicKey)
+        && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")))
+    {
+        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", anthropicKey);
+    }
+
     // Replace default logging with Serilog, configured from appsettings
     builder.Host.UseSerilog((context, services, configuration) => configuration
         .ReadFrom.Configuration(context.Configuration)
