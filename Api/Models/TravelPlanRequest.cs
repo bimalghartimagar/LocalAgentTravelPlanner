@@ -13,6 +13,7 @@ public class TravelPlanRequest
     /// </summary>
     [Required]
     [MinLength(10, ErrorMessage = "Request must be at least 10 characters")]
+    [MaxLength(2000, ErrorMessage = "Request must not exceed 2000 characters")]
     public required string Request { get; init; }
 
     /// <summary>

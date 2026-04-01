@@ -29,7 +29,8 @@
             <form id="plan-form">
                 <textarea id="request-input"
                     placeholder="Describe your trip... e.g., &quot;5-day trip from Tokyo to Kyoto, budget $1500&quot;"
-                    minlength="10" required></textarea>
+                    minlength="10" maxlength="2000" required></textarea>
+                <div class="char-count" id="char-count">0 / 2000</div>
                 <div class="form-row">
                     <select id="provider-select">
                         <option value="">Auto-detect provider</option>

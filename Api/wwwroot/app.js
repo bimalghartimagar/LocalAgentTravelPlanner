@@ -140,11 +140,32 @@ document.querySelectorAll('.chip').forEach(chip => {
     });
 });
 
+// Input limits (must match API validation)
+const REQUEST_MIN_LENGTH = 10;
+const REQUEST_MAX_LENGTH = 2000;
+
+// Character counter
+const charCount = document.getElementById('char-count');
+requestInput.addEventListener('input', () => {
+    const len = requestInput.value.length;
+    charCount.textContent = `${len} / ${REQUEST_MAX_LENGTH}`;
+    charCount.className = 'char-count'
+        + (len >= REQUEST_MAX_LENGTH ? ' at-limit' : len >= REQUEST_MAX_LENGTH * 0.9 ? ' near-limit' : '');
+});
+
 // Form submit
 form.addEventListener('submit', (e) => {
     e.preventDefault();
     const request = requestInput.value.trim();
-    if (request.length < 10) return;
+    if (request.length < REQUEST_MIN_LENGTH) {
+        showError(`Request must be at least ${REQUEST_MIN_LENGTH} characters.`);
+        return;
+    }
+    if (request.length > REQUEST_MAX_LENGTH) {
+        showError(`Request must not exceed ${REQUEST_MAX_LENGTH} characters.`);
+        return;
+    }
+    errorBanner.classList.remove('visible');
     startStreaming(request, providerSelect.value);
 });
 

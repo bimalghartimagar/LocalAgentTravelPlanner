@@ -161,13 +161,40 @@ public class TravelController : ControllerBase
     [HttpGet("plan/stream")]
     [Produces("text/event-stream")]
     public async Task StreamPlan(
-        [FromQuery] string request,
+        [FromQuery] string? request,
         [FromQuery] string? provider,
         CancellationToken cancellationToken)
     {
         Response.Headers.Append("Cache-Control", "no-cache");
         Response.Headers.Append("Connection", "keep-alive");
         Response.ContentType = "text/event-stream";
+
+        // Validate query params — [FromQuery] doesn't participate in model validation
+        if (string.IsNullOrWhiteSpace(request) || request.Length < 10)
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            await SendSseEvent("error", new TravelPlanProgressEvent
+            {
+                Agent = "system",
+                Status = "error",
+                Content = "Request must be at least 10 characters.",
+                ProgressPercent = 0
+            });
+            return;
+        }
+
+        if (request.Length > 2000)
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            await SendSseEvent("error", new TravelPlanProgressEvent
+            {
+                Agent = "system",
+                Status = "error",
+                Content = "Request must not exceed 2000 characters.",
+                ProgressPercent = 0
+            });
+            return;
+        }
 
         try
         {
