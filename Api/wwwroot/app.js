@@ -1,3 +1,16 @@
+// API key — stored in sessionStorage so it survives page refreshes
+// but clears when the browser tab closes
+function getApiKey() {
+    return sessionStorage.getItem('apiKey') || '';
+}
+function setApiKey(key) {
+    sessionStorage.setItem('apiKey', key);
+}
+function apiHeaders() {
+    const key = getApiKey();
+    return key ? { 'X-Api-Key': key } : {};
+}
+
 // State
 let renderTimer = null;
 let startTime = null;
@@ -226,8 +239,28 @@ async function startStreaming(request, provider) {
 
     try {
         const response = await fetch(`/api/travel/plan/stream?${params}`, {
-            signal: abortController.signal
+            signal: abortController.signal,
+            headers: apiHeaders()
         });
+
+        if (response.status === 401) {
+            const key = prompt('Enter API key:');
+            if (key) {
+                setApiKey(key.trim());
+                resetFormState();
+                startStreaming(request, provider);
+            } else {
+                showError('API key required.');
+                resetFormState();
+            }
+            return;
+        }
+
+        if (response.status === 429) {
+            showError('Too many requests. Try again in a minute.');
+            resetFormState();
+            return;
+        }
 
         if (!response.ok) {
             showError(`Server error: ${response.status}`);

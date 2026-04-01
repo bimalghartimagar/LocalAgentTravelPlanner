@@ -8,6 +8,7 @@ using LocalAgentTravelPlanner.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.AI;
 
 namespace LocalAgentTravelPlanner.Api.Controllers;
@@ -35,6 +36,7 @@ public class TravelController : ControllerBase
     /// This endpoint processes the request through all 5 agents sequentially.
     /// </summary>
     [HttpPost("plan")]
+    [EnableRateLimiting("plan")]
     [ProducesResponseType(typeof(TravelPlanApiResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
@@ -159,6 +161,7 @@ public class TravelController : ControllerBase
     /// Connect to this endpoint using EventSource in JavaScript.
     /// </summary>
     [HttpGet("plan/stream")]
+    [EnableRateLimiting("plan")]
     [Produces("text/event-stream")]
     public async Task StreamPlan(
         [FromQuery] string? request,

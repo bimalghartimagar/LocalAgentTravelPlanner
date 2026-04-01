@@ -13,3 +13,8 @@ bin/
 *.swp
 *.sln.DotSettings
 .secret
+.api-key
+.env
+.env.*
+appsettings.*.local.json
+appsettings.Production.json
