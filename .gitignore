@@ -18,3 +18,4 @@ bin/
 .env.*
 appsettings.*.local.json
 appsettings.Production.json
+logs/
