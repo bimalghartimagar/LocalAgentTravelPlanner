@@ -88,7 +88,9 @@ namespace LocalAgentTravelPlanner.Services
                 {
                     if (evt is AgentRunUpdateEvent e)
                     {
-                        outputBuilder.Append(e.Data);
+                        var content = e.Data?.ToString();
+                        if (!string.IsNullOrEmpty(content))
+                            outputBuilder.Append(content);
                     }
                     else if (evt is ExecutorCompletedEvent completedEvt)
                     {
@@ -185,11 +187,14 @@ namespace LocalAgentTravelPlanner.Services
                 }
                 else if (evt is AgentRunUpdateEvent e)
                 {
+                    var content = e.Data?.ToString();
+                    if (string.IsNullOrEmpty(content)) continue;
+
                     yield return new TravelPlanProgress
                     {
                         CurrentAgent = currentAgent,
                         Status = ProgressStatus.Processing,
-                        PartialOutput = e.Data?.ToString(),
+                        PartialOutput = content,
                         ProgressPercent = (GetAgentIndex(currentAgent) * 100) / agentNames.Length
                     };
                 }

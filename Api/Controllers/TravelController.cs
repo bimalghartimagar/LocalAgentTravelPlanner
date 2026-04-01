@@ -78,7 +78,9 @@ public class TravelController : ControllerBase
             {
                 if (evt is AgentRunUpdateEvent updateEvent)
                 {
-                    outputBuilder.Append(updateEvent.Data);
+                    var content = updateEvent.Data?.ToString();
+                    if (!string.IsNullOrEmpty(content))
+                        outputBuilder.Append(content);
                 }
                 else if (evt is ExecutorFailedEvent failedEvt)
                 {
@@ -274,12 +276,15 @@ public class TravelController : ControllerBase
                 }
                 else if (evt is AgentRunUpdateEvent updateEvent)
                 {
+                    var content = updateEvent.Data?.ToString();
+                    if (string.IsNullOrEmpty(content)) continue;
+
                     var idx = GetAgentIndex(currentAgent);
                     await SendSseEvent("content", new TravelPlanProgressEvent
                     {
                         Agent = currentAgent,
                         Status = "processing",
-                        Content = updateEvent.Data?.ToString(),
+                        Content = content,
                         ProgressPercent = (idx * 20) + 10
                     });
                 }
