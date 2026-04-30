@@ -55,6 +55,21 @@ public class TravelController : ControllerBase
 
             _logger.LogInformation("Using provider: {Provider}, model: {Model}", provider, model);
 
+            // Pre-validate intent before the 5-agent pipeline
+            if (!await IsTravelRelatedAsync(chatClient, request.Request, cancellationToken))
+            {
+                stopwatch.Stop();
+                return Ok(new TravelPlanApiResponse
+                {
+                    Success = false,
+                    TravelPlan = NotTravelRefusal,
+                    Error = "Request is not travel-related",
+                    ProcessingTimeSeconds = stopwatch.Elapsed.TotalSeconds,
+                    Provider = provider.ToString(),
+                    Model = model
+                });
+            }
+
             // Create agents
             var researcher = ResearcherAgentFactory.Create(chatClient, _researchTools, _travelTools);
             var planner = PlannerAgentFactory.Create(chatClient);
@@ -216,6 +231,19 @@ public class TravelController : ControllerBase
                 Content = $"Using {providerUsed} with model {model}",
                 ProgressPercent = 0
             });
+
+            // Pre-validate intent before the 5-agent pipeline
+            if (!await IsTravelRelatedAsync(chatClient, request, cancellationToken))
+            {
+                await SendSseEvent("error", new TravelPlanProgressEvent
+                {
+                    Agent = "system",
+                    Status = "rejected",
+                    Content = NotTravelRefusal,
+                    ProgressPercent = 0
+                });
+                return;
+            }
 
             // Create agents
             var researcher = ResearcherAgentFactory.Create(chatClient, _researchTools, _travelTools);
@@ -388,5 +416,41 @@ public class TravelController : ControllerBase
                 Anthropic = anthropicAvailable ? "available" : "not configured"
             }
         });
+    }
+
+    private const string IntentCheckPrompt = """
+        You are an intent classifier. Determine if the following user message is a travel planning request.
+
+        A valid travel request mentions any of: a destination, trip duration, travel budget, travel style,
+        or asks for help planning a trip or journey.
+
+        Respond with exactly one word: "yes" if it is travel-related, "no" if it is not.
+        Do not explain. Do not add punctuation.
+        """;
+
+    private const string NotTravelRefusal =
+        "I can only help with travel planning. Please describe a trip you'd like to plan, " +
+        "including a destination and optionally a budget, duration, and travel style.";
+
+    private static async Task<bool> IsTravelRelatedAsync(
+        IChatClient chatClient, string request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, IntentCheckPrompt),
+                new(ChatRole.User, request)
+            };
+
+            var response = await chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken);
+            var answer = response.Text?.Trim().ToLowerInvariant() ?? "";
+            return answer.StartsWith("yes");
+        }
+        catch
+        {
+            // If intent check fails, allow through — better to attempt than block on classifier error
+            return true;
+        }
     }
 }

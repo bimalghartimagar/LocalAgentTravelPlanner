@@ -70,6 +70,19 @@ namespace LocalAgentTravelPlanner.Services
 
             try
             {
+                // Pre-validate intent before committing to the 5-agent pipeline
+                if (!await IsTravelRelatedAsync(request, cancellationToken))
+                {
+                    stopwatch.Stop();
+                    return new TravelPlanResponse
+                    {
+                        Success = false,
+                        TravelPlan = NotTravelRefusal,
+                        ProcessingTime = stopwatch.Elapsed,
+                        AgentsUsed = 0
+                    };
+                }
+
                 // Build the sequential workflow
                 var workflow = AgentWorkflowBuilder.BuildSequential(
                     new List<ChatClientAgent> { _researcher, _planner, _accountant, _auditor, _aggregator }
@@ -150,6 +163,19 @@ namespace LocalAgentTravelPlanner.Services
             string request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            // Pre-validate intent before committing to the 5-agent pipeline
+            if (!await IsTravelRelatedAsync(request, cancellationToken))
+            {
+                yield return new TravelPlanProgress
+                {
+                    CurrentAgent = "Complete",
+                    Status = ProgressStatus.Error,
+                    PartialOutput = NotTravelRefusal,
+                    ProgressPercent = 0
+                };
+                yield break;
+            }
+
             var agentNames = new[] { "Researcher", "Planner", "Accountant", "Auditor", "Aggregator" };
             var currentAgent = agentNames[0];
 
@@ -249,6 +275,46 @@ namespace LocalAgentTravelPlanner.Services
                 }
             }
         }
+
+        private const string IntentCheckPrompt = """
+            You are an intent classifier. Determine if the following user message is a travel planning request.
+
+            A valid travel request mentions any of: a destination, trip duration, travel budget, travel style,
+            or asks for help planning a trip or journey.
+
+            Respond with exactly one word: "yes" if it is travel-related, "no" if it is not.
+            Do not explain. Do not add punctuation.
+            """;
+
+        /// <summary>
+        /// Lightweight LLM call to check if the user's request is travel-related
+        /// before committing to the full 5-agent pipeline.
+        /// </summary>
+        private async Task<bool> IsTravelRelatedAsync(string request, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var messages = new List<ChatMessage>
+                {
+                    new(ChatRole.System, IntentCheckPrompt),
+                    new(ChatRole.User, request)
+                };
+
+                var response = await _chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken);
+                var answer = response.Text?.Trim().ToLowerInvariant() ?? "";
+                return answer.StartsWith("yes");
+            }
+            catch
+            {
+                // If intent check fails, allow the request through —
+                // better to attempt planning than to block on a classifier error
+                return true;
+            }
+        }
+
+        private const string NotTravelRefusal =
+            "I can only help with travel planning. Please describe a trip you'd like to plan, " +
+            "including a destination and optionally a budget, duration, and travel style.";
 
         private static string? TryResolveAgent(string executorId)
         {
