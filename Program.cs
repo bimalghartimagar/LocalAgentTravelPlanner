@@ -94,6 +94,18 @@ internal class Program
             }
 
             Console.WriteLine();
+
+            // Pre-validate intent before the 5-agent pipeline
+            if (!await IsTravelRelatedAsync(chatClientWithTools, input))
+            {
+                Console.WriteLine("I can only help with travel planning. Please describe a trip you'd like to plan,");
+                Console.WriteLine("including a destination and optionally a budget, duration, and travel style.");
+                Console.WriteLine();
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadKey();
+                return;
+            }
+
             Console.WriteLine("═══════════════════════════════════════════════════════════════");
             Console.WriteLine("🔄 Processing your request through the agent pipeline...");
             Console.WriteLine("═══════════════════════════════════════════════════════════════");
@@ -160,6 +172,34 @@ internal class Program
             Console.WriteLine();
             Console.WriteLine("Press any key to exit...");
             Console.ReadKey();
+        }
+    }
+
+    private static async Task<bool> IsTravelRelatedAsync(IChatClient chatClient, string request)
+    {
+        try
+        {
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, """
+                    You are an intent classifier. Determine if the following user message is a travel planning request.
+
+                    A valid travel request mentions any of: a destination, trip duration, travel budget, travel style,
+                    or asks for help planning a trip or journey.
+
+                    Respond with exactly one word: "yes" if it is travel-related, "no" if it is not.
+                    Do not explain. Do not add punctuation.
+                    """),
+                new(ChatRole.User, request)
+            };
+
+            var response = await chatClient.GetResponseAsync(messages);
+            var answer = response.Text?.Trim().ToLowerInvariant() ?? "";
+            return answer.StartsWith("yes");
+        }
+        catch
+        {
+            return true;
         }
     }
 }
