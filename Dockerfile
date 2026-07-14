@@ -23,8 +23,8 @@ WORKDIR /app
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser -d /app appuser
 
-# Create logs directory with correct ownership
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app/logs
+# Create logs and data directories with correct ownership
+RUN mkdir -p /app/logs /app/data && chown -R appuser:appuser /app/logs /app/data
 
 COPY --from=build --chown=appuser:appuser /app .
 

@@ -112,6 +112,14 @@ namespace LocalAgentTravelPlanner.Agents
             - ✅ Flag any safety concerns or restricted areas
             - ❌ DO NOT write the itinerary - that's the Planner's job
             - ❌ DO NOT calculate totals - that's the Accountant's job
+
+            ### Tool Call Discipline (IMPORTANT)
+            - Call each tool AT MOST ONCE per logical query. If you've already called
+              GetWeatherForecast for "Tokyo", DO NOT call it again for "Tokyo".
+            - DO NOT re-call a tool to "double-check" — trust the first result.
+            - After you have data for the destination(s), STOP calling tools and write your output.
+            - Aim for 5-8 tool calls total across the whole turn, not per-destination.
+            - If a tool returns an error, note it in your output rather than retrying.
             """;
 
         /// <summary>

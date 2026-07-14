@@ -1,3 +1,6 @@
+using LocalAgentTravelPlanner.Services.Conversations;
+using Microsoft.Extensions.AI;
+
 namespace LocalAgentTravelPlanner.Services
 {
     /// <summary>
@@ -31,6 +34,53 @@ namespace LocalAgentTravelPlanner.Services
         IAsyncEnumerable<TravelPlanProgress> PlanTravelStreamingAsync(
             string request,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Classifies a follow-up turn to a <see cref="TurnRoute"/>. First turn callers should
+        /// skip this and assume <see cref="TurnRoute.Full"/>. On parse failure or LLM error,
+        /// falls back to <see cref="TurnRoute.Full"/> (safer to over-run than to under-run).
+        /// </summary>
+        Task<TurnRoute> RouteAsync(
+            IReadOnlyList<ChatMessage> history,
+            string newMessage,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Runs one conversation turn and returns the full result. Mutates <paramref name="conversation"/>
+        /// in place on success (appends user/assistant messages, updates <c>LatestPlan</c> unless
+        /// <see cref="TurnRoute.Clarify"/> or <see cref="TurnRoute.OffTopic"/>). Caller persists.
+        /// </summary>
+        Task<ConversationTurnResponse> ContinueConversationAsync(
+            Conversation conversation,
+            string newMessage,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Streaming variant of <see cref="ContinueConversationAsync"/>. Yields one
+        /// <see cref="TravelPlanProgress"/> with <see cref="ProgressStatus.Routed"/> first,
+        /// then per-agent events, then a terminal <see cref="ProgressStatus.PlanFinal"/> or
+        /// <see cref="ProgressStatus.Clarified"/>, then <see cref="ProgressStatus.Completed"/>.
+        /// On error, the conversation is not mutated.
+        /// </summary>
+        IAsyncEnumerable<TravelPlanProgress> ContinueConversationStreamingAsync(
+            Conversation conversation,
+            string newMessage,
+            CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>
+    /// Result of one conversation turn. Extends <see cref="TravelPlanResponse"/> with the route
+    /// taken and (for <see cref="TurnRoute.Clarify"/> / <see cref="TurnRoute.OffTopic"/>) a
+    /// chat-style assistant reply. For plan-changing routes, the new plan is in
+    /// <see cref="TravelPlanResponse.TravelPlan"/>.
+    /// </summary>
+    public record ConversationTurnResponse : TravelPlanResponse
+    {
+        /// <summary>Which subset of the pipeline ran this turn.</summary>
+        public required TurnRoute Route { get; init; }
+
+        /// <summary>Non-null when the turn produced a chat answer instead of an updated plan.</summary>
+        public string? AssistantReply { get; init; }
     }
 
     /// <summary>
@@ -72,6 +122,9 @@ namespace LocalAgentTravelPlanner.Services
 
         /// <summary>Progress percentage (0-100)</summary>
         public int ProgressPercent { get; init; }
+
+        /// <summary>Set on <see cref="ProgressStatus.Routed"/> events.</summary>
+        public TurnRoute? Route { get; init; }
     }
 
     public enum ProgressStatus
@@ -79,6 +132,12 @@ namespace LocalAgentTravelPlanner.Services
         Starting,
         Processing,
         Completed,
-        Error
+        Error,
+        /// <summary>Router has decided which agents will run this turn. <c>Route</c> is set.</summary>
+        Routed,
+        /// <summary>Aggregator finished and <c>LatestPlan</c> was updated. <c>PartialOutput</c> = full plan markdown.</summary>
+        PlanFinal,
+        /// <summary>Clarify / off-topic turn finished without changing the plan. <c>PartialOutput</c> = assistant reply.</summary>
+        Clarified
     }
 }

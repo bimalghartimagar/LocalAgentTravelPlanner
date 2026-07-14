@@ -1,6 +1,8 @@
+using System.ClientModel;
 using Anthropic.SDK;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
+using OpenAI;
 
 namespace LocalAgentTravelPlanner.Services
 {
@@ -8,19 +10,49 @@ namespace LocalAgentTravelPlanner.Services
     /// Factory for creating IChatClient instances from different providers.
     ///
     /// PROVIDER ABSTRACTION:
-    /// Both Ollama and Anthropic implement IChatClient from Microsoft.Extensions.AI,
-    /// so you can switch providers with a simple configuration change.
+    /// All providers implement IChatClient from Microsoft.Extensions.AI, so you can
+    /// switch providers with a simple configuration change.
     ///
     /// USAGE:
-    /// - Set environment variable ANTHROPIC_API_KEY for Claude
+    /// - Set ANTHROPIC_API_KEY for Claude
+    /// - Set GROQ_API_KEY for Groq-hosted open-source models (free tier, fast)
+    /// - Set GEMINI_API_KEY for Google Gemini
     /// - Or use Ollama (no API key needed, runs locally)
     /// </summary>
     public static class ChatClientFactory
     {
+        // Both Gemini and Groq expose OpenAI-compatible surfaces — we hit them through
+        // the standard OpenAIClient with overridden endpoints. No provider-specific SDK.
+        private const string GeminiOpenAIEndpoint = "https://generativelanguage.googleapis.com/v1beta/openai/";
+        private const string GroqOpenAIEndpoint = "https://api.groq.com/openai/v1";
+
+        private const string DefaultAnthropicModel = "claude-sonnet-4-20250514";
+        private const string DefaultGeminiModel = "gemini-2.5-flash";
+        private const string DefaultGroqModel = "llama-3.3-70b-versatile"; // best free-tier tools model
+
+        // Ollama default — overridable via OLLAMA_MODEL env var. qwen3-coder:30b handles
+        // the 5-agent tool-calling workflow noticeably better than smaller models, at the
+        // cost of 5-15x more latency on local hardware. Set to qwen2.5:7b for faster
+        // local iteration when you don't need plan-quality output.
+        private const string FallbackOllamaModel = "qwen3-coder:30b";
+
+        // Caps tool-calling rounds inside a single LLM request to stop runaway loops on
+        // mid-tier models (Llama 3.3 70B on Groq, smaller Ollama models). The legitimate
+        // Researcher pass uses 5-7 tool calls (Nominatim×2, Open-Meteo, OpenTripMap, OSRM);
+        // 8 leaves a little headroom without letting the model burn iterations re-calling
+        // the same tool. Default in Microsoft.Extensions.AI is 10. See FunctionInvokingChatClient.
+        private const int MaxToolIterations = 8;
+        private static string DefaultOllamaModel =>
+            Environment.GetEnvironmentVariable("OLLAMA_MODEL") is { Length: > 0 } v
+                ? v
+                : FallbackOllamaModel;
+
         public enum Provider
         {
             Ollama,
-            Anthropic
+            Anthropic,
+            Gemini,
+            Groq
         }
 
         /// <summary>
@@ -30,42 +62,59 @@ namespace LocalAgentTravelPlanner.Services
         {
             return provider switch
             {
-                Provider.Ollama => CreateOllamaClient(model ?? "qwen2.5:7b"),
-                Provider.Anthropic => CreateAnthropicClient(model ?? "claude-sonnet-4-20250514"),
+                Provider.Ollama => CreateOllamaClient(model ?? DefaultOllamaModel),
+                Provider.Anthropic => CreateAnthropicClient(model ?? DefaultAnthropicModel),
+                Provider.Gemini => CreateGeminiClient(model ?? DefaultGeminiModel),
+                Provider.Groq => CreateGroqClient(model ?? DefaultGroqModel),
                 _ => throw new ArgumentException($"Unknown provider: {provider}")
             };
         }
 
         /// <summary>
         /// Creates an IChatClient by auto-detecting the best available provider.
-        /// Prefers Anthropic if API key is set, otherwise falls back to Ollama.
+        /// Precedence: explicit preference → Anthropic key → Groq key → Gemini key → Ollama (local).
+        /// Groq is preferred over Gemini for free-tier work because its limits are more usable
+        /// for the multi-agent tool-calling pattern; Gemini still wins when explicitly picked.
         /// </summary>
         public static (IChatClient Client, Provider Provider, string Model) CreateWithAutoDetect(
             string? preferredProvider = null)
         {
-            // Check if user specified a preference
+            // Explicit preference wins
             if (!string.IsNullOrEmpty(preferredProvider))
             {
                 if (Enum.TryParse<Provider>(preferredProvider, ignoreCase: true, out var provider))
                 {
-                    var model = provider == Provider.Anthropic
-                        ? "claude-sonnet-4-20250514"
-                        : "qwen2.5:7b";
+                    var model = provider switch
+                    {
+                        Provider.Anthropic => DefaultAnthropicModel,
+                        Provider.Gemini => DefaultGeminiModel,
+                        Provider.Groq => DefaultGroqModel,
+                        _ => DefaultOllamaModel
+                    };
                     return (Create(provider, model), provider, model);
                 }
             }
 
-            // Auto-detect: prefer Anthropic if API key exists
+            // Auto-detect: Anthropic → Groq → Gemini → Ollama
             var anthropicKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
             if (!string.IsNullOrEmpty(anthropicKey))
             {
-                const string model = "claude-sonnet-4-20250514";
-                return (CreateAnthropicClient(model), Provider.Anthropic, model);
+                return (CreateAnthropicClient(DefaultAnthropicModel), Provider.Anthropic, DefaultAnthropicModel);
             }
 
-            // Fall back to Ollama (local)
-            const string ollamaModel = "qwen2.5:7b";
-            return (CreateOllamaClient(ollamaModel), Provider.Ollama, ollamaModel);
+            var groqKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
+            if (!string.IsNullOrEmpty(groqKey))
+            {
+                return (CreateGroqClient(DefaultGroqModel), Provider.Groq, DefaultGroqModel);
+            }
+
+            var geminiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
+            if (!string.IsNullOrEmpty(geminiKey))
+            {
+                return (CreateGeminiClient(DefaultGeminiModel), Provider.Gemini, DefaultGeminiModel);
+            }
+
+            return (CreateOllamaClient(DefaultOllamaModel), Provider.Ollama, DefaultOllamaModel);
         }
 
         private static IChatClient CreateOllamaClient(string model)
@@ -77,7 +126,58 @@ namespace LocalAgentTravelPlanner.Services
 
             // Wrap with function invocation support
             return new ChatClientBuilder(baseClient)
-                .UseFunctionInvocation()
+                .UseFunctionInvocation(loggerFactory: null,
+                    configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Build();
+        }
+
+        private static IChatClient CreateGroqClient(string model)
+        {
+            var apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY")
+                ?? throw new InvalidOperationException(
+                    "GROQ_API_KEY environment variable is not set. " +
+                    "Get a free key at https://console.groq.com/keys");
+
+            // Groq exposes the same OpenAI-compatible surface as Gemini, just at a different
+            // endpoint. Inference is unusually fast (~500 tokens/sec on Llama 70B) and the
+            // free tier is genuinely usable for multi-agent workloads.
+            var openAiClient = new OpenAIClient(
+                new ApiKeyCredential(apiKey),
+                new OpenAIClientOptions { Endpoint = new Uri(GroqOpenAIEndpoint) });
+
+            return openAiClient
+                .GetChatClient(model)
+                .AsIChatClient()
+                .AsBuilder()
+                .Use(inner => new RetryingChatClient(inner))
+                .UseFunctionInvocation(loggerFactory: null,
+                    configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Build();
+        }
+
+        private static IChatClient CreateGeminiClient(string model)
+        {
+            var apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
+                ?? throw new InvalidOperationException(
+                    "GEMINI_API_KEY environment variable is not set. " +
+                    "Get a key at https://aistudio.google.com/app/apikey");
+
+            // Gemini's OpenAI-compat endpoint accepts the standard OpenAIClient with the
+            // Endpoint overridden. Tool calling and streaming both work through this surface.
+            var openAiClient = new OpenAIClient(
+                new ApiKeyCredential(apiKey),
+                new OpenAIClientOptions { Endpoint = new Uri(GeminiOpenAIEndpoint) });
+
+            return openAiClient
+                .GetChatClient(model)
+                .AsIChatClient()
+                .AsBuilder()
+                // Retry transient 429/503 first so a single rate-limited call doesn't kill
+                // the whole turn. Has to sit BEFORE UseFunctionInvocation so it retries each
+                // individual LLM round-trip during tool calling, not just the outer call.
+                .Use(inner => new RetryingChatClient(inner))
+                .UseFunctionInvocation(loggerFactory: null,
+                    configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
                 .Build();
         }
 
@@ -98,8 +198,81 @@ namespace LocalAgentTravelPlanner.Services
             var modelToInject = model;
             return new ChatClientBuilder(baseClient)
                 .Use(inner => new AnthropicOptionsInjector(inner, modelToInject))
-                .UseFunctionInvocation()
+                .UseFunctionInvocation(loggerFactory: null,
+                    configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
                 .Build();
+        }
+    }
+
+    /// <summary>
+    /// Retries transient failures (HTTP 429 / 5xx) from upstream LLM providers with
+    /// exponential backoff + jitter. Sits between the function-invocation layer and the
+    /// transport so each individual LLM round-trip (including tool-calling sub-turns)
+    /// gets its own retry budget.
+    ///
+    /// Catches both <see cref="System.ClientModel.ClientResultException"/> (OpenAI SDK)
+    /// and <see cref="HttpRequestException"/> for transport-layer hiccups.
+    /// </summary>
+    internal class RetryingChatClient : DelegatingChatClient
+    {
+        private const int MaxRetries = 3;
+        private static readonly Random Jitter = new();
+        private static readonly int[] RetryableStatusCodes = { 408, 429, 500, 502, 503, 504 };
+
+        public RetryingChatClient(IChatClient inner) : base(inner) { }
+
+        public override async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            // Materialize once so each retry sees the same message list.
+            var materialized = messages as IList<ChatMessage> ?? messages.ToList();
+
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    return await base.GetResponseAsync(materialized, options, cancellationToken);
+                }
+                catch (Exception ex) when (attempt < MaxRetries && IsTransient(ex))
+                {
+                    await DelayAsync(attempt, cancellationToken);
+                }
+            }
+        }
+
+        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            // Streaming retries are tricky because partial output may already have been
+            // surfaced. For now, defer to the inner client; the workflow loop will see
+            // the failure and fall through to error handling. Function-invocation calls
+            // inside an agent turn use the non-streaming path, so they still benefit.
+            return base.GetStreamingResponseAsync(messages, options, cancellationToken);
+        }
+
+        private static bool IsTransient(Exception ex)
+        {
+            // OpenAI SDK surfaces HTTP errors as ClientResultException with a Status property
+            if (ex is System.ClientModel.ClientResultException clientEx)
+                return Array.IndexOf(RetryableStatusCodes, clientEx.Status) >= 0;
+
+            // Transport-layer issues — network blip, DNS hiccup, etc.
+            if (ex is HttpRequestException) return true;
+            if (ex is TaskCanceledException tce && tce.InnerException is TimeoutException) return true;
+
+            return false;
+        }
+
+        private static Task DelayAsync(int attempt, CancellationToken cancellationToken)
+        {
+            // Exponential backoff: 1s, 2s, 4s base + 0-500ms jitter
+            var baseMs = 1000 * (int)Math.Pow(2, attempt);
+            var jitterMs = Jitter.Next(0, 500);
+            return Task.Delay(baseMs + jitterMs, cancellationToken);
         }
     }
 

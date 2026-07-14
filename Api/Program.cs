@@ -1,5 +1,6 @@
 using System.Threading.RateLimiting;
 using LocalAgentTravelPlanner.Api.Middleware;
+using LocalAgentTravelPlanner.Services.Conversations;
 using LocalAgentTravelPlanner.Tools;
 using Microsoft.AspNetCore.HttpOverrides;
 using Serilog;
@@ -21,6 +22,24 @@ try
     {
         Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", anthropicKey);
     }
+    var geminiKey = builder.Configuration["GEMINI_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(geminiKey)
+        && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GEMINI_API_KEY")))
+    {
+        Environment.SetEnvironmentVariable("GEMINI_API_KEY", geminiKey);
+    }
+    var groqKey = builder.Configuration["GROQ_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(groqKey)
+        && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GROQ_API_KEY")))
+    {
+        Environment.SetEnvironmentVariable("GROQ_API_KEY", groqKey);
+    }
+    var ollamaModel = builder.Configuration["OLLAMA_MODEL"];
+    if (!string.IsNullOrWhiteSpace(ollamaModel)
+        && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OLLAMA_MODEL")))
+    {
+        Environment.SetEnvironmentVariable("OLLAMA_MODEL", ollamaModel);
+    }
 
     // Replace default logging with Serilog, configured from appsettings
     builder.Host.UseSerilog((context, services, configuration) => configuration
@@ -39,6 +58,24 @@ try
     builder.Services.AddHttpClient<ResearchTools>();
     builder.Services.AddHttpClient<TravelTools>();
     builder.Services.AddOpenApi();
+
+    // Conversation persistence — SQLite by default (durable across restarts);
+    // set Conversations:Backend=InMemory to opt into the volatile in-process store.
+    var backend = builder.Configuration["Conversations:Backend"] ?? "Sqlite";
+    if (string.Equals(backend, "InMemory", StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Services.AddSingleton<IConversationStore, InMemoryConversationStore>();
+    }
+    else
+    {
+        var connectionString = builder.Configuration.GetConnectionString("Conversations")
+            ?? "Data Source=conversations.db";
+        builder.Services.AddSingleton<IConversationStore>(
+            _ => new SqliteConversationStore(connectionString));
+    }
+
+    // Per-conversation lock so two simultaneous turns on the same conversation can't race.
+    builder.Services.AddSingleton<IConversationLock, ConversationLockService>();
 
     // Rate limiting — protects LLM endpoints from abuse
     builder.Services.AddRateLimiter(options =>

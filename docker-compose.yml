@@ -6,8 +6,10 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ApiKey=${API_KEY:?Set API_KEY in .env or environment}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ConnectionStrings__Conversations=Data Source=/app/data/conversations.db
     volumes:
       - app-logs:/app/logs
+      - app-data:/app/data
     expose:
       - "8080"
     restart: unless-stopped
@@ -32,3 +34,4 @@ services:
 
 volumes:
   app-logs:
+  app-data:

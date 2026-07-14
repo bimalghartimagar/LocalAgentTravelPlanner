@@ -8,134 +8,121 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Multi-Agent Travel Planner</h1>
-            <p>AI-powered travel planning with 5 specialized agents</p>
+    <div class="app">
+        <!-- Top bar -->
+        <header class="topbar">
+            <div class="brand">
+                <strong>Multi-Agent Travel Planner</strong>
+                <span class="brand-sub">5 specialized agents · routed per turn</span>
+            </div>
             <div class="provider-badges">
                 <span class="badge" id="ollama-badge">
-                    <span class="badge-dot"></span>
-                    Ollama: checking...
+                    <span class="badge-dot"></span>Ollama
                 </span>
                 <span class="badge" id="anthropic-badge">
-                    <span class="badge-dot"></span>
-                    Anthropic: checking...
+                    <span class="badge-dot"></span>Anthropic
                 </span>
+                <span class="badge" id="gemini-badge">
+                    <span class="badge-dot"></span>Gemini
+                </span>
+                <span class="badge" id="groq-badge">
+                    <span class="badge-dot"></span>Groq
+                </span>
+                <select id="provider-select" title="LLM provider">
+                    <option value="">Auto</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="gemini">Gemini</option>
+                    <option value="groq">Groq</option>
+                </select>
             </div>
         </header>
 
-        <!-- Input Section -->
-        <div class="card" id="input-card">
-            <form id="plan-form">
-                <textarea id="request-input"
-                    placeholder="Describe your trip... e.g., &quot;5-day trip from Tokyo to Kyoto, budget $1500&quot;"
-                    minlength="10" maxlength="2000" required></textarea>
-                <div class="char-count" id="char-count">0 / 2000</div>
-                <div class="form-row">
-                    <select id="provider-select">
-                        <option value="">Auto-detect provider</option>
-                        <option value="ollama">Ollama (Local)</option>
-                        <option value="anthropic">Anthropic (Claude)</option>
-                    </select>
-                    <button type="submit" class="btn btn-primary" id="submit-btn">Plan My Trip</button>
-                    <button type="button" class="btn btn-danger" id="cancel-btn" style="display:none">Cancel</button>
-                </div>
-            </form>
-            <div class="examples">
-                <button type="button" class="chip">5-day trip from Tokyo to Kyoto, budget $1500</button>
-                <button type="button" class="chip">3-day family trip from Paris to Barcelona, budget &euro;800</button>
-                <button type="button" class="chip">7-day solo backpacking in Vietnam starting from Hanoi, budget $600</button>
-                <button type="button" class="chip">Luxury 4-day trip to Bali from Singapore, budget unlimited</button>
-            </div>
-        </div>
+        <!-- Three-column workspace -->
+        <main class="workspace">
+            <!-- Conversation sidebar -->
+            <aside class="sidebar" id="sidebar">
+                <button class="btn btn-primary new-conv-btn" id="new-conv-btn">+ New conversation</button>
+                <ul class="conv-list" id="conv-list"></ul>
+                <div class="conv-empty" id="conv-empty">No conversations yet.</div>
+            </aside>
 
-        <!-- Error Banner -->
-        <div class="error-banner" id="error-banner"></div>
+            <!-- Chat -->
+            <section class="chat">
+                <div class="chat-scroll" id="chat-scroll">
+                    <div class="chat-empty" id="chat-empty">
+                        <h2>Plan a trip</h2>
+                        <p>Describe a destination, dates, budget, and style. Follow up to refine.</p>
+                        <div class="examples">
+                            <button type="button" class="chip">5-day trip from Tokyo to Kyoto, budget $1500</button>
+                            <button type="button" class="chip">3-day family trip from Paris to Barcelona, budget &euro;800</button>
+                            <button type="button" class="chip">7-day solo backpacking in Vietnam starting from Hanoi, budget $600</button>
+                            <button type="button" class="chip">Luxury 4-day trip to Bali from Singapore, budget unlimited</button>
+                        </div>
+                    </div>
+                    <!-- messages injected here -->
+                </div>
+                <div class="error-banner" id="error-banner"></div>
+                <form class="composer" id="plan-form">
+                    <textarea id="request-input"
+                        placeholder="Describe your trip, or ask a follow-up question..."
+                        minlength="10" maxlength="2000" required rows="2"></textarea>
+                    <div class="composer-row">
+                        <span class="char-count" id="char-count">0 / 2000</span>
+                        <button type="button" class="btn btn-danger" id="cancel-btn" style="display:none">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="submit-btn">Send</button>
+                    </div>
+                </form>
+            </section>
 
-        <!-- Pipeline Section -->
-        <div class="card pipeline-section" id="pipeline-section">
-            <div class="pipeline">
-                <div class="agent-step" data-agent="researcher">
-                    <div class="step-icon">1</div>
-                    <div class="step-label">Researcher</div>
+            <!-- Plan pane -->
+            <section class="plan-pane">
+                <div class="plan-header">
+                    <strong>Latest plan</strong>
+                    <span class="plan-meta" id="plan-meta"></span>
                 </div>
-                <div class="pipeline-connector" data-index="0"></div>
-                <div class="agent-step" data-agent="planner">
-                    <div class="step-icon">2</div>
-                    <div class="step-label">Planner</div>
+                <div class="plan-scroll" id="plan-scroll">
+                    <div class="plan-empty" id="plan-empty">
+                        The current travel plan will appear here.
+                    </div>
                 </div>
-                <div class="pipeline-connector" data-index="1"></div>
-                <div class="agent-step" data-agent="accountant">
-                    <div class="step-icon">3</div>
-                    <div class="step-label">Accountant</div>
-                </div>
-                <div class="pipeline-connector" data-index="2"></div>
-                <div class="agent-step" data-agent="auditor">
-                    <div class="step-icon">4</div>
-                    <div class="step-label">Auditor</div>
-                </div>
-                <div class="pipeline-connector" data-index="3"></div>
-                <div class="agent-step" data-agent="aggregator">
-                    <div class="step-icon">5</div>
-                    <div class="step-label">Aggregator</div>
-                </div>
-            </div>
-            <div class="progress-container">
-                <div class="progress-bar" id="progress-bar"></div>
-            </div>
-            <div class="status-text" id="status-text">Initializing...</div>
-        </div>
-
-        <!-- Output Section with Tabs -->
-        <div class="card output-section" id="output-section">
-            <div class="output-meta" id="output-meta"></div>
-            <div class="agent-tabs" id="agent-tabs">
-                <button class="agent-tab active" data-tab="researcher">
-                    <span class="tab-dot"></span>Research
-                </button>
-                <button class="agent-tab" data-tab="planner">
-                    <span class="tab-dot"></span>Itinerary
-                </button>
-                <button class="agent-tab" data-tab="accountant">
-                    <span class="tab-dot"></span>Budget
-                </button>
-                <button class="agent-tab" data-tab="auditor">
-                    <span class="tab-dot"></span>Audit
-                </button>
-                <button class="agent-tab" data-tab="aggregator">
-                    <span class="tab-dot"></span>Travel Plan
-                </button>
-                <button class="agent-tab" data-tab="summary">
-                    <span class="tab-dot"></span>Summary
-                </button>
-            </div>
-            <div class="output-scroll" id="output-scroll">
-                <div class="tab-pane active" id="pane-researcher">
-                    <div class="tab-pane-empty">Waiting for research data...</div>
-                </div>
-                <div class="tab-pane" id="pane-planner">
-                    <div class="tab-pane-empty">Waiting for itinerary...</div>
-                </div>
-                <div class="tab-pane" id="pane-accountant">
-                    <div class="tab-pane-empty">Waiting for budget analysis...</div>
-                </div>
-                <div class="tab-pane" id="pane-auditor">
-                    <div class="tab-pane-empty">Waiting for audit report...</div>
-                </div>
-                <div class="tab-pane" id="pane-aggregator">
-                    <div class="tab-pane-empty">Waiting for final travel plan...</div>
-                </div>
-                <div class="tab-pane" id="pane-summary">
-                    <div class="tab-pane-empty">Waiting for summary of checks...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- New Plan button (shown after completion) -->
-        <div style="text-align:center; margin-top:0.5rem; display:none;" id="new-plan-row">
-            <button type="button" class="btn btn-secondary" id="new-plan-btn">Plan Another Trip</button>
-        </div>
+            </section>
+        </main>
     </div>
+
+    <!-- Template: assistant turn bubble -->
+    <template id="tpl-assistant-turn">
+        <div class="msg msg-assistant">
+            <div class="msg-header">
+                <span class="msg-role">Assistant</span>
+                <span class="route-chip"></span>
+            </div>
+            <div class="pipeline-mini">
+                <div class="agent-dot" data-agent="researcher" title="Researcher"><span>1</span></div>
+                <div class="agent-dot" data-agent="planner" title="Planner"><span>2</span></div>
+                <div class="agent-dot" data-agent="accountant" title="Accountant"><span>3</span></div>
+                <div class="agent-dot" data-agent="auditor" title="Auditor"><span>4</span></div>
+                <div class="agent-dot" data-agent="aggregator" title="Aggregator"><span>5</span></div>
+            </div>
+            <div class="msg-status"></div>
+            <details class="agent-details" hidden>
+                <summary>Agent details</summary>
+                <div class="agent-tabs">
+                    <button type="button" class="agent-tab" data-tab="researcher"><span class="tab-dot"></span>Research</button>
+                    <button type="button" class="agent-tab" data-tab="planner"><span class="tab-dot"></span>Itinerary</button>
+                    <button type="button" class="agent-tab" data-tab="accountant"><span class="tab-dot"></span>Budget</button>
+                    <button type="button" class="agent-tab" data-tab="auditor"><span class="tab-dot"></span>Audit</button>
+                    <button type="button" class="agent-tab" data-tab="aggregator"><span class="tab-dot"></span>Plan</button>
+                </div>
+                <div class="tab-pane" data-pane="researcher"></div>
+                <div class="tab-pane" data-pane="planner"></div>
+                <div class="tab-pane" data-pane="accountant"></div>
+                <div class="tab-pane" data-pane="auditor"></div>
+                <div class="tab-pane" data-pane="aggregator"></div>
+            </details>
+            <div class="msg-body markdown-body"></div>
+        </div>
+    </template>
 
     <script src="app.js"></script>
 </body>

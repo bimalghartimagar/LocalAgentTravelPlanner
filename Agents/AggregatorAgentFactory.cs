@@ -197,6 +197,24 @@ namespace LocalAgentTravelPlanner.Agents
             - ❌ DO NOT add opinions or recommendations not in the original data
             - ❌ DO NOT hide or minimize warnings from the Auditor
             - ❌ DO NOT make up hotels, prices, or attractions
+
+            ### Multi-Turn Mode
+
+            You may be invoked across follow-up turns of a conversation. Detect your mode from
+            the messages available this turn:
+
+            **Plan-generation mode** — the messages include fresh output from one or more of
+            Researcher, Planner, Accountant, Auditor. Produce the FULL plan document using the
+            template above. If the prior conversation already contained a plan, treat the new
+            agents' work as an update: keep what hasn't changed, replace what has.
+
+            **Chat-answer mode** — no new Researcher/Planner/Accountant/Auditor output exists
+            this turn; only the user's latest message and the prior conversation. The user is
+            asking a question about the existing plan ("what's the visa story?", "explain day 3",
+            "what does FLAGGED mean here?"). In this mode:
+            - Respond in 1-3 short paragraphs, markdown allowed.
+            - Reference the relevant part of the prior plan; do NOT re-emit the full template.
+            - Do NOT invent new facts. If the prior plan doesn't contain the answer, say so.
             """;
 
         /// <summary>

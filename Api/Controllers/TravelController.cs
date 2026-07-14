@@ -405,6 +405,10 @@ public class TravelController : ControllerBase
         // Check which providers are available
         var anthropicAvailable = !string.IsNullOrEmpty(
             Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY"));
+        var geminiAvailable = !string.IsNullOrEmpty(
+            Environment.GetEnvironmentVariable("GEMINI_API_KEY"));
+        var groqAvailable = !string.IsNullOrEmpty(
+            Environment.GetEnvironmentVariable("GROQ_API_KEY"));
 
         return Ok(new
         {
@@ -413,7 +417,9 @@ public class TravelController : ControllerBase
             Providers = new
             {
                 Ollama = "configured (local server required)",
-                Anthropic = anthropicAvailable ? "available" : "not configured"
+                Anthropic = anthropicAvailable ? "available" : "not configured",
+                Gemini = geminiAvailable ? "available" : "not configured",
+                Groq = groqAvailable ? "available" : "not configured"
             }
         });
     }
