@@ -125,6 +125,9 @@ namespace LocalAgentTravelPlanner.Services
 
         /// <summary>Set on <see cref="ProgressStatus.Routed"/> events.</summary>
         public TurnRoute? Route { get; init; }
+
+        /// <summary>Change summary markdown (bullets) — set on subset-route PlanFinal events.</summary>
+        public string? ChangeSummary { get; init; }
     }
 
     public enum ProgressStatus

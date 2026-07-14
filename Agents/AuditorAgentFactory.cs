@@ -229,6 +229,18 @@ namespace LocalAgentTravelPlanner.Agents
             - ❌ DO NOT approve plans with any score = 1
             - ❌ DO NOT skip verification - use tools for ALL major claims
             - ❌ DO NOT be lenient on hallucinations - if it's not in research, flag it
+
+            ### Tool Call Discipline (IMPORTANT)
+            - Call each verification tool AT MOST ONCE per criterion. If you've
+              already run ValidateMathConsistency on this plan, DO NOT run it again.
+            - DO NOT re-call a tool to "double-check" — trust the first result.
+            - After you have verdicts for all 6 criteria (Financial, Temporal, Safety,
+              Groundedness, Relevance, Completeness), STOP calling tools and write
+              your audit report.
+            - Aim for 6-8 tool calls total across the whole turn — one per criterion,
+              plus DetermineAuditDecision at the end.
+            - If a tool returns an error, cite the error in your audit rather than
+              retrying.
             """;
 
         /// <summary>

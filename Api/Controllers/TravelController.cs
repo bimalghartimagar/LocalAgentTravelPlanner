@@ -409,6 +409,8 @@ public class TravelController : ControllerBase
             Environment.GetEnvironmentVariable("GEMINI_API_KEY"));
         var groqAvailable = !string.IsNullOrEmpty(
             Environment.GetEnvironmentVariable("GROQ_API_KEY"));
+        var openRouterAvailable = !string.IsNullOrEmpty(
+            Environment.GetEnvironmentVariable("OPEN_ROUTER_AI_KEY"));
 
         return Ok(new
         {
@@ -419,7 +421,8 @@ public class TravelController : ControllerBase
                 Ollama = "configured (local server required)",
                 Anthropic = anthropicAvailable ? "available" : "not configured",
                 Gemini = geminiAvailable ? "available" : "not configured",
-                Groq = groqAvailable ? "available" : "not configured"
+                Groq = groqAvailable ? "available" : "not configured",
+                OpenRouter = openRouterAvailable ? "available" : "not configured"
             }
         });
     }

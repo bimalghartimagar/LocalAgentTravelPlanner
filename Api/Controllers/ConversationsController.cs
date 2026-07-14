@@ -79,6 +79,18 @@ public class ConversationsController : ControllerBase
                 Role = m.Role == ChatRole.Assistant ? "assistant" : "user",
                 Content = m.Text ?? string.Empty
             }).ToList(),
+            Turns = conv.Turns.Select(t => new ConversationTurnDto
+            {
+                TurnIndex = t.TurnIndex,
+                Route = t.Route.ToString().ToLowerInvariant(),
+                AgentsRun = t.AgentsRun,
+                CreatedAt = t.CreatedAt,
+                AgentOutputs = t.AgentOutputs,
+                DurationMs = t.DurationMs,
+                Provider = t.Provider,
+                Model = t.Model,
+                ChangeSummary = t.ChangeSummary
+            }).ToList(),
             LatestPlan = conv.LatestPlan,
             CreatedAt = conv.CreatedAt,
             LastActivity = conv.LastActivity
@@ -116,7 +128,7 @@ public class ConversationsController : ControllerBase
             try
             {
                 var (chatClient, provider, model) = ChatClientFactory.CreateWithAutoDetect(request.Provider);
-                var service = BuildService(chatClient);
+                var service = BuildService(chatClient, provider.ToString(), model);
 
                 var result = await service.ContinueConversationAsync(conv, request.Message, cancellationToken);
                 await _store.UpdateAsync(conv, cancellationToken);
@@ -205,7 +217,7 @@ public class ConversationsController : ControllerBase
         try
         {
             var (chatClient, providerUsed, model) = ChatClientFactory.CreateWithAutoDetect(provider);
-            var service = BuildService(chatClient);
+            var service = BuildService(chatClient, providerUsed.ToString(), model);
 
             await SendSseEvent("init", new ConversationInitEventData
             {
@@ -267,7 +279,8 @@ public class ConversationsController : ControllerBase
                     case ProgressStatus.PlanFinal:
                         await SendSseEvent("plan-final", new PlanFinalEventData
                         {
-                            Plan = progress.PartialOutput ?? string.Empty
+                            Plan = progress.PartialOutput ?? string.Empty,
+                            ChangeSummary = progress.ChangeSummary
                         });
                         break;
 
@@ -308,8 +321,8 @@ public class ConversationsController : ControllerBase
         }
     }
 
-    private TravelPlannerService BuildService(IChatClient chatClient)
-        => new(chatClient, _researchTools, _travelTools, _serviceLogger);
+    private TravelPlannerService BuildService(IChatClient chatClient, string? providerName = null, string? modelName = null)
+        => new(chatClient, _researchTools, _travelTools, _serviceLogger, providerName, modelName);
 
     private async Task SendSseEvent<T>(string eventType, T data)
     {

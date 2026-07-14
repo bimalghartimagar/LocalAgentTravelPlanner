@@ -39,6 +39,8 @@ namespace LocalAgentTravelPlanner.Services
 
         private readonly IChatClient _chatClient;
         private readonly ILogger<TravelPlannerService> _logger;
+        private readonly string? _providerName;
+        private readonly string? _modelName;
         private readonly ChatClientAgent _researcher;
         private readonly ChatClientAgent _planner;
         private readonly ChatClientAgent _accountant;
@@ -60,10 +62,14 @@ namespace LocalAgentTravelPlanner.Services
             IChatClient chatClient,
             ResearchTools researchTools,
             TravelTools travelTools,
-            ILogger<TravelPlannerService>? logger = null)
+            ILogger<TravelPlannerService>? logger = null,
+            string? providerName = null,
+            string? modelName = null)
         {
             _chatClient = chatClient;
             _logger = logger ?? NullLogger<TravelPlannerService>.Instance;
+            _providerName = providerName;
+            _modelName = modelName;
 
             // Initialize all agents using the factory pattern
             // Factories encapsulate agent configuration (prompts, tools)
@@ -350,11 +356,22 @@ namespace LocalAgentTravelPlanner.Services
 
             Routes:
             - full      : new destination/dates/scope, or any request that needs fresh research
-            - replan    : itinerary tweaks within the same trip (swap days, change activities, reorder)
-            - rebudget  : budget/cost adjustments only ("make it cheaper", "increase budget", "what if I add $200")
-            - reaudit   : re-validate the existing plan ("any safety issues?", "is day 4 too packed?")
-            - clarify   : Q&A about the existing plan, no plan change ("what's the visa story?", "what does this mean?")
+            - replan    : itinerary tweaks within the same trip (swap days, change activities,
+                          reorder, e.g. "swap Kyoto for Osaka", "move day 3 to day 5")
+            - rebudget  : the user is asking to CHANGE the budget or reduce/increase costs
+                          ("make it cheaper", "cut $100 from day 3", "increase budget to $2000",
+                          "what if I add $200"). Must be an ACTIONABLE change request.
+            - reaudit   : the user explicitly asks to re-run validation and update the plan
+                          ("re-run the audit", "re-validate the plan", "audit day 4 again and
+                          update"). Must be an explicit re-validate command.
+            - clarify   : any QUESTION about the existing plan, no plan change. This includes
+                          safety questions ("any safety issues with day 4?", "is day 4 packed?"),
+                          info questions ("what's the visa story?", "what does FLAGGED mean?"),
+                          and explanations ("explain day 3"). If the message is a question mark
+                          or asks for information, ALWAYS clarify — NEVER reaudit or rebudget.
             - offtopic  : not travel-related
+
+            Rule of thumb: questions → clarify. Actionable change requests → replan/rebudget/reaudit.
 
             Respond with exactly one of: full, replan, rebudget, reaudit, clarify, offtopic
             No explanation. No punctuation.
@@ -452,6 +469,7 @@ namespace LocalAgentTravelPlanner.Services
                 conversation.History.Add(new ChatMessage(ChatRole.Assistant, NotTravelRefusal));
                 UpdateConversationMetadata(conversation, newMessage);
                 stopwatch.Stop();
+                AppendTurnMetadata(conversation, TurnRoute.OffTopic, Array.Empty<string>(), durationMs: stopwatch.ElapsedMilliseconds);
 
                 LogTurnCompleted(conversation.Id, TurnRoute.OffTopic, Array.Empty<string>(),
                     stopwatch.ElapsedMilliseconds, success: true, error: null, routerUsage);
@@ -472,6 +490,7 @@ namespace LocalAgentTravelPlanner.Services
             var input = BuildWorkflowInput(conversation, newMessage);
 
             var aggregatorBuffer = new StringBuilder();
+            var agentBuffers = NewAgentBuffers();
             string? agentError = null;
             var completedAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string? currentAgent = null;
@@ -489,6 +508,7 @@ namespace LocalAgentTravelPlanner.Services
                 {
                     var content = e.Data?.ToString();
                     if (string.IsNullOrEmpty(content)) continue;
+                    AppendToAgentBuffer(agentBuffers, currentAgent, content);
                     if (string.Equals(currentAgent, "Aggregator", StringComparison.OrdinalIgnoreCase))
                         aggregatorBuffer.Append(content);
                 }
@@ -516,14 +536,19 @@ namespace LocalAgentTravelPlanner.Services
 
             stopwatch.Stop();
 
-            var finalText = aggregatorBuffer.ToString();
-            var success = agentError == null && !string.IsNullOrWhiteSpace(finalText);
+            var rawText = aggregatorBuffer.ToString();
+            var success = agentError == null && !string.IsNullOrWhiteSpace(rawText);
+            var (planOnly, changeSummary) = SplitPlanAndChanges(rawText);
+            agentBuffers.TryGetValue("Auditor", out var auditorSb);
+            var finalText = EnforceAuditorVerdict(planOnly, auditorSb?.ToString(), conversation.Id);
 
             if (success)
             {
                 conversation.History.Add(new ChatMessage(ChatRole.User, newMessage));
                 conversation.History.Add(new ChatMessage(ChatRole.Assistant, finalText));
                 UpdateConversationMetadata(conversation, newMessage);
+                AppendTurnMetadata(conversation, route, completedAgents.ToArray(),
+                    MaterializeAgentOutputs(agentBuffers), stopwatch.ElapsedMilliseconds, changeSummary);
 
                 if (route != TurnRoute.Clarify)
                     conversation.LatestPlan = finalText;
@@ -584,6 +609,8 @@ namespace LocalAgentTravelPlanner.Services
                 conversation.History.Add(new ChatMessage(ChatRole.User, newMessage));
                 conversation.History.Add(new ChatMessage(ChatRole.Assistant, NotTravelRefusal));
                 UpdateConversationMetadata(conversation, newMessage);
+                AppendTurnMetadata(conversation, TurnRoute.OffTopic, Array.Empty<string>(),
+                    durationMs: turnStopwatch.ElapsedMilliseconds);
 
                 yield return new TravelPlanProgress
                 {
@@ -618,6 +645,7 @@ namespace LocalAgentTravelPlanner.Services
             await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
 
             var aggregatorBuffer = new StringBuilder();
+            var agentBuffers = NewAgentBuffers();
             string currentAgent = subsetNames[0];
             string? agentError = null;
 
@@ -642,6 +670,7 @@ namespace LocalAgentTravelPlanner.Services
                     var content = e.Data?.ToString();
                     if (string.IsNullOrEmpty(content)) continue;
 
+                    AppendToAgentBuffer(agentBuffers, currentAgent, content);
                     if (string.Equals(currentAgent, "Aggregator", StringComparison.OrdinalIgnoreCase))
                         aggregatorBuffer.Append(content);
 
@@ -731,9 +760,15 @@ namespace LocalAgentTravelPlanner.Services
                 yield break;
             }
 
+            var (planOnly, changeSummary) = SplitPlanAndChanges(finalText);
+            agentBuffers.TryGetValue("Auditor", out var auditorSb);
+            finalText = EnforceAuditorVerdict(planOnly, auditorSb?.ToString(), conversation.Id);
+
             conversation.History.Add(new ChatMessage(ChatRole.User, newMessage));
             conversation.History.Add(new ChatMessage(ChatRole.Assistant, finalText));
             UpdateConversationMetadata(conversation, newMessage);
+            AppendTurnMetadata(conversation, route, completedAgents.ToArray(),
+                MaterializeAgentOutputs(agentBuffers), turnStopwatch.ElapsedMilliseconds, changeSummary);
 
             if (route == TurnRoute.Clarify)
             {
@@ -755,7 +790,8 @@ namespace LocalAgentTravelPlanner.Services
                     Status = ProgressStatus.PlanFinal,
                     PartialOutput = finalText,
                     Route = route,
-                    ProgressPercent = 100
+                    ProgressPercent = 100,
+                    ChangeSummary = changeSummary
                 };
             }
 
@@ -855,6 +891,151 @@ namespace LocalAgentTravelPlanner.Services
                 var trimmed = newMessage.Trim();
                 conv.Title = trimmed.Length <= 60 ? trimmed : trimmed[..60] + "…";
             }
+        }
+
+        /// <summary>
+        /// Appends per-turn metadata (route + agents run) parallel to the user/assistant
+        /// message pair just added. Enables the frontend to reconstruct the route chip and
+        /// pipeline dots when a user refreshes the page.
+        /// </summary>
+        private void AppendTurnMetadata(
+            Conversation conv,
+            TurnRoute route,
+            IReadOnlyList<string> agentsRun,
+            IReadOnlyDictionary<string, string>? agentOutputs = null,
+            long? durationMs = null,
+            string? changeSummary = null)
+        {
+            conv.Turns.Add(new TurnMetadata(
+                TurnIndex: conv.Turns.Count,
+                Route: route,
+                AgentsRun: agentsRun.Select(n => n.ToLowerInvariant()).ToList(),
+                CreatedAt: DateTime.UtcNow,
+                AgentOutputs: agentOutputs,
+                DurationMs: durationMs,
+                Provider: _providerName,
+                Model: _modelName,
+                ChangeSummary: changeSummary));
+        }
+
+        /// <summary>
+        /// Splits the Aggregator's output into (plan document, change-summary bullets).
+        /// Splits on the "## 🔄 Changes This Turn" heading emitted by the prompt for
+        /// follow-up (subset) turns. Returns (fullText, null) if no such heading exists.
+        /// </summary>
+        private static readonly string[] ChangeHeadingCandidates =
+        {
+            "## 🔄 Changes This Turn",
+            "## Changes This Turn",
+            "### 🔄 Changes This Turn",
+            "### Changes This Turn"
+        };
+
+        private static (string Plan, string? ChangeSummary) SplitPlanAndChanges(string aggregatorOutput)
+        {
+            if (string.IsNullOrEmpty(aggregatorOutput)) return (aggregatorOutput, null);
+
+            foreach (var heading in ChangeHeadingCandidates)
+            {
+                var idx = aggregatorOutput.IndexOf(heading, StringComparison.Ordinal);
+                if (idx < 0) continue;
+
+                var plan = aggregatorOutput[..idx].TrimEnd();
+                var summary = aggregatorOutput[(idx + heading.Length)..].TrimStart('\r', '\n', ' ').TrimEnd();
+                return (plan, string.IsNullOrWhiteSpace(summary) ? null : summary);
+            }
+            return (aggregatorOutput, null);
+        }
+
+        // Server-side safety net for weak-model verdict inversion. Parses the Auditor's
+        // output for its actual decision, then rewrites the Aggregator plan's status
+        // block if it disagrees. Weak models sometimes flip APPROVED↔REJECTED — this
+        // catches that class of bug regardless of model quality.
+        private static readonly System.Text.RegularExpressions.Regex AuditorVerdictRegex =
+            new(@"\b(APPROVED|FLAGGED|REJECTED)\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private static readonly System.Text.RegularExpressions.Regex PlanStatusRegex =
+            new(@"(Plan Status:.*?\b)(APPROVED|FLAGGED|REJECTED)(\b)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.Singleline |
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
+        /// Extracts the Auditor's verdict from its output. Prefers "FINAL VERDICT" /
+        /// "Decision" contexts, falls back to first standalone APPROVED/FLAGGED/REJECTED
+        /// word. Returns null if none found.
+        /// </summary>
+        private static string? ExtractAuditorVerdict(string auditorOutput)
+        {
+            if (string.IsNullOrEmpty(auditorOutput)) return null;
+
+            // Prefer explicit "FINAL VERDICT: X" or "Decision: X" patterns
+            var priority = System.Text.RegularExpressions.Regex.Match(
+                auditorOutput,
+                @"(?:FINAL\s*VERDICT|Decision|Status)\s*[:\-]?\s*\**\s*(APPROVED|FLAGGED|REJECTED)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (priority.Success) return priority.Groups[1].Value.ToUpperInvariant();
+
+            // Fallback: first bare occurrence
+            var any = AuditorVerdictRegex.Match(auditorOutput);
+            return any.Success ? any.Groups[1].Value.ToUpperInvariant() : null;
+        }
+
+        /// <summary>
+        /// If the Aggregator's plan status disagrees with the Auditor's actual verdict,
+        /// overwrite it. Emits a warning log so we can measure how often the model got
+        /// this wrong.
+        /// </summary>
+        private string EnforceAuditorVerdict(string plan, string? auditorOutput, string conversationId)
+        {
+            if (string.IsNullOrEmpty(plan) || string.IsNullOrEmpty(auditorOutput)) return plan;
+
+            var actualVerdict = ExtractAuditorVerdict(auditorOutput);
+            if (actualVerdict == null) return plan;
+
+            var match = PlanStatusRegex.Match(plan);
+            if (!match.Success) return plan;
+
+            var declared = match.Groups[2].Value.ToUpperInvariant();
+            if (string.Equals(declared, actualVerdict, StringComparison.OrdinalIgnoreCase))
+                return plan;
+
+            _logger.LogWarning(
+                "Aggregator declared verdict {Declared} but Auditor said {Actual}; overwriting to Auditor's verdict. ConversationId={ConversationId}",
+                declared, actualVerdict, conversationId);
+
+            return PlanStatusRegex.Replace(plan, m => m.Groups[1].Value + actualVerdict + m.Groups[3].Value);
+        }
+
+        /// <summary>
+        /// Builds an agent buffer dictionary once per turn. Passed by ref through the
+        /// event loop so <c>AgentRunUpdateEvent</c> content can be captured per-agent
+        /// alongside the existing aggregator buffer.
+        /// </summary>
+        private static Dictionary<string, StringBuilder> NewAgentBuffers() =>
+            new(StringComparer.OrdinalIgnoreCase);
+
+        private static void AppendToAgentBuffer(
+            Dictionary<string, StringBuilder> buffers,
+            string? currentAgent,
+            string content)
+        {
+            if (string.IsNullOrEmpty(currentAgent)) return;
+            if (!buffers.TryGetValue(currentAgent, out var buf))
+                buffers[currentAgent] = buf = new StringBuilder();
+            buf.Append(content);
+        }
+
+        private static Dictionary<string, string>? MaterializeAgentOutputs(
+            Dictionary<string, StringBuilder> buffers)
+        {
+            if (buffers.Count == 0) return null;
+            return buffers.ToDictionary(
+                kvp => kvp.Key.ToLowerInvariant(),
+                kvp => kvp.Value.ToString(),
+                StringComparer.OrdinalIgnoreCase);
         }
     }
 }

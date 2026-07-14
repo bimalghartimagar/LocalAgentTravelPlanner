@@ -20,7 +20,9 @@ bin/
 appsettings.*.local.json
 appsettings.Local.json
 appsettings.Production.json
+**/appsettings.Development.json/**
 logs/
 *.db
 *.db-wal
 *.db-shm
+.keys.txt

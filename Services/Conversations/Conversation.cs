@@ -50,7 +50,29 @@ public sealed class Conversation
 
     /// <summary>UTC timestamp of the most recent successful turn; bumped on every <c>UpdateAsync</c>.</summary>
     public DateTime LastActivity { get; set; }
+
+    /// <summary>
+    /// Per-turn metadata (route, agents run) parallel to <see cref="History"/>. Enables
+    /// the frontend to reconstruct the route chip + mini pipeline dots on a refreshed
+    /// browser session, not just plain text bubbles.
+    /// </summary>
+    public List<TurnMetadata> Turns { get; init; } = new();
 }
+
+/// <summary>
+/// Slim per-turn record. <see cref="TurnIndex"/> is 0-based and matches the pair of
+/// user/assistant messages at positions (2*TurnIndex, 2*TurnIndex+1) in <c>History</c>.
+/// </summary>
+public sealed record TurnMetadata(
+    int TurnIndex,
+    TurnRoute Route,
+    IReadOnlyList<string> AgentsRun,
+    DateTime CreatedAt,
+    IReadOnlyDictionary<string, string>? AgentOutputs = null,
+    long? DurationMs = null,
+    string? Provider = null,
+    string? Model = null,
+    string? ChangeSummary = null);
 
 /// <summary>Lightweight projection for the sidebar list.</summary>
 public sealed record ConversationSummary(string Id, string? Title, DateTime LastActivity);

@@ -37,6 +37,34 @@ public sealed class SqliteConversationStore : IConversationStore
 
         CREATE INDEX IF NOT EXISTS IX_Messages_Conv_Position
             ON Messages(ConversationId, Position);
+
+        CREATE TABLE IF NOT EXISTS Turns (
+            Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ConversationId  TEXT NOT NULL,
+            TurnIndex       INTEGER NOT NULL,
+            Route           TEXT NOT NULL,
+            AgentsRun       TEXT NOT NULL,
+            CreatedAt       TEXT NOT NULL,
+            DurationMs      INTEGER NULL,
+            Provider        TEXT NULL,
+            Model           TEXT NULL,
+            FOREIGN KEY (ConversationId) REFERENCES Conversations(Id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS IX_Turns_Conv_Index
+            ON Turns(ConversationId, TurnIndex);
+
+        CREATE TABLE IF NOT EXISTS TurnAgentContent (
+            Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ConversationId  TEXT NOT NULL,
+            TurnIndex       INTEGER NOT NULL,
+            Agent           TEXT NOT NULL,
+            Content         TEXT NOT NULL,
+            FOREIGN KEY (ConversationId) REFERENCES Conversations(Id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS IX_TurnAgentContent_Conv_Turn
+            ON TurnAgentContent(ConversationId, TurnIndex);
         """;
 
     private readonly string _connectionString;
@@ -57,6 +85,19 @@ public sealed class SqliteConversationStore : IConversationStore
         conn.Execute("PRAGMA journal_mode=WAL;");
         conn.Execute("PRAGMA foreign_keys=ON;");
         conn.Execute(SchemaSql);
+
+        // Backwards-compat: existing DBs may have older Turns table without newer columns.
+        // SQLite has no "ADD COLUMN IF NOT EXISTS" — swallow the "duplicate column" error.
+        TryAddColumn(conn, "Turns", "DurationMs", "INTEGER");
+        TryAddColumn(conn, "Turns", "Provider", "TEXT");
+        TryAddColumn(conn, "Turns", "Model", "TEXT");
+        TryAddColumn(conn, "Turns", "ChangeSummary", "TEXT");
+    }
+
+    private static void TryAddColumn(SqliteConnection conn, string table, string col, string type)
+    {
+        try { conn.Execute($"ALTER TABLE {table} ADD COLUMN {col} {type} NULL"); }
+        catch (SqliteException) { /* column already exists */ }
     }
 
     public async Task<Conversation> CreateAsync(CancellationToken cancellationToken = default)
@@ -107,6 +148,26 @@ public sealed class SqliteConversationStore : IConversationStore
             new { Id = id },
             cancellationToken: cancellationToken));
 
+        var turnRows = await conn.QueryAsync<TurnRow>(new CommandDefinition(
+            "SELECT TurnIndex, Route, AgentsRun, CreatedAt, DurationMs, Provider, Model, ChangeSummary FROM Turns WHERE ConversationId = @Id ORDER BY TurnIndex",
+            new { Id = id },
+            cancellationToken: cancellationToken));
+
+        var agentContentRows = await conn.QueryAsync<AgentContentRow>(new CommandDefinition(
+            "SELECT TurnIndex, Agent, Content FROM TurnAgentContent WHERE ConversationId = @Id",
+            new { Id = id },
+            cancellationToken: cancellationToken));
+
+        // Group agent content by TurnIndex for O(1) attach below
+        var contentByTurn = agentContentRows
+            .GroupBy(r => (int)r.TurnIndex)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyDictionary<string, string>)g.ToDictionary(
+                    r => r.Agent,
+                    r => r.Content,
+                    StringComparer.OrdinalIgnoreCase));
+
         var conv = new Conversation
         {
             Id = row.Id,
@@ -118,6 +179,25 @@ public sealed class SqliteConversationStore : IConversationStore
 
         foreach (var m in msgRows)
             conv.History.Add(new ChatMessage(ParseRole(m.Role), m.Content));
+
+        foreach (var t in turnRows)
+        {
+            var agents = string.IsNullOrEmpty(t.AgentsRun)
+                ? (IReadOnlyList<string>)Array.Empty<string>()
+                : t.AgentsRun.Split(',', StringSplitOptions.RemoveEmptyEntries);
+            var route = Enum.TryParse<TurnRoute>(t.Route, ignoreCase: true, out var r) ? r : TurnRoute.Full;
+            contentByTurn.TryGetValue((int)t.TurnIndex, out var outputs);
+            conv.Turns.Add(new TurnMetadata(
+                (int)t.TurnIndex,
+                route,
+                agents,
+                ParseDate(t.CreatedAt),
+                outputs,
+                t.DurationMs,
+                t.Provider,
+                t.Model,
+                t.ChangeSummary));
+        }
 
         return conv;
     }
@@ -186,6 +266,72 @@ public sealed class SqliteConversationStore : IConversationStore
                 cancellationToken: cancellationToken));
         }
 
+        // Replace-all for Turns too (matches Messages semantics)
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM Turns WHERE ConversationId = @Id",
+            new { conversation.Id },
+            transaction: tx,
+            cancellationToken: cancellationToken));
+
+        if (conversation.Turns.Count > 0)
+        {
+            var turnRows = new List<object>(conversation.Turns.Count);
+            foreach (var t in conversation.Turns)
+            {
+                turnRows.Add(new
+                {
+                    ConversationId = conversation.Id,
+                    TurnIndex = t.TurnIndex,
+                    Route = t.Route.ToString(),
+                    AgentsRun = string.Join(",", t.AgentsRun),
+                    CreatedAt = FormatDate(t.CreatedAt),
+                    DurationMs = t.DurationMs,
+                    Provider = t.Provider,
+                    Model = t.Model,
+                    ChangeSummary = t.ChangeSummary
+                });
+            }
+            await conn.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO Turns (ConversationId, TurnIndex, Route, AgentsRun, CreatedAt, DurationMs, Provider, Model, ChangeSummary) " +
+                "VALUES (@ConversationId, @TurnIndex, @Route, @AgentsRun, @CreatedAt, @DurationMs, @Provider, @Model, @ChangeSummary)",
+                turnRows,
+                transaction: tx,
+                cancellationToken: cancellationToken));
+        }
+
+        // Replace-all for TurnAgentContent — same semantics
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM TurnAgentContent WHERE ConversationId = @Id",
+            new { conversation.Id },
+            transaction: tx,
+            cancellationToken: cancellationToken));
+
+        var contentRows = new List<object>();
+        foreach (var t in conversation.Turns)
+        {
+            if (t.AgentOutputs == null) continue;
+            foreach (var (agent, content) in t.AgentOutputs)
+            {
+                if (string.IsNullOrEmpty(content)) continue;
+                contentRows.Add(new
+                {
+                    ConversationId = conversation.Id,
+                    TurnIndex = t.TurnIndex,
+                    Agent = agent,
+                    Content = content
+                });
+            }
+        }
+        if (contentRows.Count > 0)
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO TurnAgentContent (ConversationId, TurnIndex, Agent, Content) " +
+                "VALUES (@ConversationId, @TurnIndex, @Agent, @Content)",
+                contentRows,
+                transaction: tx,
+                cancellationToken: cancellationToken));
+        }
+
         await tx.CommitAsync(cancellationToken);
     }
 
@@ -246,4 +392,6 @@ public sealed class SqliteConversationStore : IConversationStore
     private sealed record ConvRow(string Id, string? Title, string? LatestPlan, string CreatedAt, string LastActivity);
     private sealed record MsgRow(string Role, string Content);
     private sealed record SummaryRow(string Id, string? Title, string LastActivity);
+    private sealed record TurnRow(long TurnIndex, string Route, string AgentsRun, string CreatedAt, long? DurationMs, string? Provider, string? Model, string? ChangeSummary);
+    private sealed record AgentContentRow(long TurnIndex, string Agent, string Content);
 }

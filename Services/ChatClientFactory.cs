@@ -21,14 +21,16 @@ namespace LocalAgentTravelPlanner.Services
     /// </summary>
     public static class ChatClientFactory
     {
-        // Both Gemini and Groq expose OpenAI-compatible surfaces — we hit them through
+        // Gemini, Groq, OpenRouter expose OpenAI-compatible surfaces — we hit them through
         // the standard OpenAIClient with overridden endpoints. No provider-specific SDK.
         private const string GeminiOpenAIEndpoint = "https://generativelanguage.googleapis.com/v1beta/openai/";
         private const string GroqOpenAIEndpoint = "https://api.groq.com/openai/v1";
+        private const string OpenRouterOpenAIEndpoint = "https://openrouter.ai/api/v1";
 
         private const string DefaultAnthropicModel = "claude-sonnet-4-20250514";
         private const string DefaultGeminiModel = "gemini-2.5-flash";
-        private const string DefaultGroqModel = "llama-3.3-70b-versatile"; // best free-tier tools model
+        private const string DefaultGroqModel = "llama-3.1-8b-instant"; // higher TPM headroom on free tier; smaller model, may loop more on tool calling
+        private const string DefaultOpenRouterModel = "deepseek/deepseek-chat"; // cheap ($0.14/$0.28 per M), tools capable, good for multi-agent
 
         // Ollama default — overridable via OLLAMA_MODEL env var. qwen3-coder:30b handles
         // the 5-agent tool-calling workflow noticeably better than smaller models, at the
@@ -52,7 +54,8 @@ namespace LocalAgentTravelPlanner.Services
             Ollama,
             Anthropic,
             Gemini,
-            Groq
+            Groq,
+            OpenRouter
         }
 
         /// <summary>
@@ -66,6 +69,7 @@ namespace LocalAgentTravelPlanner.Services
                 Provider.Anthropic => CreateAnthropicClient(model ?? DefaultAnthropicModel),
                 Provider.Gemini => CreateGeminiClient(model ?? DefaultGeminiModel),
                 Provider.Groq => CreateGroqClient(model ?? DefaultGroqModel),
+                Provider.OpenRouter => CreateOpenRouterClient(model ?? DefaultOpenRouterModel),
                 _ => throw new ArgumentException($"Unknown provider: {provider}")
             };
         }
@@ -89,17 +93,26 @@ namespace LocalAgentTravelPlanner.Services
                         Provider.Anthropic => DefaultAnthropicModel,
                         Provider.Gemini => DefaultGeminiModel,
                         Provider.Groq => DefaultGroqModel,
+                        Provider.OpenRouter => DefaultOpenRouterModel,
                         _ => DefaultOllamaModel
                     };
                     return (Create(provider, model), provider, model);
                 }
             }
 
-            // Auto-detect: Anthropic → Groq → Gemini → Ollama
+            // Auto-detect: Anthropic → OpenRouter → Groq → Gemini → Ollama
+            // OpenRouter above Groq because paid credits should be used before free-tier
+            // limits kick in — user opted in by loading credit.
             var anthropicKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
             if (!string.IsNullOrEmpty(anthropicKey))
             {
                 return (CreateAnthropicClient(DefaultAnthropicModel), Provider.Anthropic, DefaultAnthropicModel);
+            }
+
+            var openRouterKey = Environment.GetEnvironmentVariable("OPEN_ROUTER_AI_KEY");
+            if (!string.IsNullOrEmpty(openRouterKey))
+            {
+                return (CreateOpenRouterClient(DefaultOpenRouterModel), Provider.OpenRouter, DefaultOpenRouterModel);
             }
 
             var groqKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
@@ -126,6 +139,30 @@ namespace LocalAgentTravelPlanner.Services
 
             // Wrap with function invocation support
             return new ChatClientBuilder(baseClient)
+                .UseFunctionInvocation(loggerFactory: null,
+                    configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Build();
+        }
+
+        private static IChatClient CreateOpenRouterClient(string model)
+        {
+            var apiKey = Environment.GetEnvironmentVariable("OPEN_ROUTER_AI_KEY")
+                ?? throw new InvalidOperationException(
+                    "OPEN_ROUTER_AI_KEY environment variable is not set. " +
+                    "Get a key at https://openrouter.ai/keys");
+
+            // OpenRouter aggregates many models behind a single OpenAI-compat endpoint.
+            // Model name follows "provider/model" convention (e.g. "deepseek/deepseek-chat",
+            // "anthropic/claude-3.5-sonnet", "meta-llama/llama-3.3-70b-instruct").
+            var openAiClient = new OpenAIClient(
+                new ApiKeyCredential(apiKey),
+                new OpenAIClientOptions { Endpoint = new Uri(OpenRouterOpenAIEndpoint) });
+
+            return openAiClient
+                .GetChatClient(model)
+                .AsIChatClient()
+                .AsBuilder()
+                .Use(inner => new RetryingChatClient(inner))
                 .UseFunctionInvocation(loggerFactory: null,
                     configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
                 .Build();

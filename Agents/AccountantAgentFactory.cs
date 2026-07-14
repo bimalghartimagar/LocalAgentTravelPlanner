@@ -163,6 +163,16 @@ namespace LocalAgentTravelPlanner.Agents
             - ✅ Include realistic buffers (tips, contingency)
             - ❌ DO NOT approve budgets that are mathematically impossible
             - ❌ DO NOT skip line items - account for EVERYTHING
+
+            ### Tool Call Discipline (IMPORTANT)
+            - Call each tool AT MOST ONCE per logical query. If you've already
+              called ConvertCurrency for "USD to JPY 100", DO NOT call it again with
+              the same values.
+            - DO NOT re-call a tool to "double-check" — trust the first result.
+            - After you have the numbers you need, STOP calling tools and write your
+              budget breakdown.
+            - Aim for 3-5 tool calls total across the whole turn.
+            - If a tool returns an error, note it in your output rather than retrying.
             """;
 
         /// <summary>

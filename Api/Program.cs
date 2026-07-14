@@ -34,6 +34,12 @@ try
     {
         Environment.SetEnvironmentVariable("GROQ_API_KEY", groqKey);
     }
+    var openRouterKey = builder.Configuration["OPEN_ROUTER_AI_KEY"];
+    if (!string.IsNullOrWhiteSpace(openRouterKey)
+        && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OPEN_ROUTER_AI_KEY")))
+    {
+        Environment.SetEnvironmentVariable("OPEN_ROUTER_AI_KEY", openRouterKey);
+    }
     var ollamaModel = builder.Configuration["OLLAMA_MODEL"];
     if (!string.IsNullOrWhiteSpace(ollamaModel)
         && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OLLAMA_MODEL")))

@@ -31,6 +31,10 @@ const ROUTE_LABELS = {
     offtopic: 'Off-topic'
 };
 
+// Shared "plan updated" pointer used by both live plan-final and restored bubbles.
+const PLAN_UPDATED_POINTER_HTML =
+    '<em style="color:var(--text-muted);font-size:0.85rem;">Plan updated — see right pane →</em>';
+
 // ─────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────
@@ -88,16 +92,19 @@ async function checkHealth() {
         const anthropicBadge = document.getElementById('anthropic-badge');
         const geminiBadge = document.getElementById('gemini-badge');
         const groqBadge = document.getElementById('groq-badge');
+        const openRouterBadge = document.getElementById('openrouter-badge');
         ollamaBadge.className = 'badge available';
         ollamaBadge.innerHTML = '<span class="badge-dot"></span>Ollama';
         setBadge(anthropicBadge, 'Anthropic', data.providers.anthropic === 'available');
         setBadge(geminiBadge, 'Gemini', data.providers.gemini === 'available');
         setBadge(groqBadge, 'Groq', data.providers.groq === 'available');
+        setBadge(openRouterBadge, 'OpenRouter', data.providers.openRouter === 'available');
     } catch {
         document.getElementById('ollama-badge').className = 'badge unavailable';
         document.getElementById('anthropic-badge').style.display = 'none';
         document.getElementById('gemini-badge').style.display = 'none';
         document.getElementById('groq-badge').style.display = 'none';
+        document.getElementById('openrouter-badge').style.display = 'none';
     }
 }
 
@@ -207,11 +214,17 @@ async function loadConversation(id) {
         const data = await res.json();
 
         clearChat();
+        // Turns metadata is parallel to user/assistant pairs. Turn index N corresponds to
+        // history messages at positions (2N user, 2N+1 assistant).
+        const turnsByIndex = new Map((data.turns || []).map(t => [t.turnIndex, t]));
+        let assistantIndex = 0;
         for (const msg of data.history) {
             if (msg.role === 'user') {
                 appendUserBubble(msg.content);
             } else {
-                appendStaticAssistantBubble(msg.content);
+                const meta = turnsByIndex.get(assistantIndex);
+                appendRestoredAssistantBubble(msg.content, meta);
+                assistantIndex++;
             }
         }
         renderPlan(data.latestPlan);
@@ -260,6 +273,72 @@ function appendStaticAssistantBubble(text) {
     `;
     div.querySelector('.msg-body').innerHTML = marked.parse(text || '');
     chatScroll.appendChild(div);
+    updateChatEmptyState();
+    scrollChatToBottom();
+}
+
+// Restored assistant bubble WITH route chip + completed pipeline dots (based on turn
+// metadata persisted server-side). For Clarify/OffTopic turns, put the text in body.
+// For plan-changing turns, body is empty and the plan lives in the right pane (LatestPlan).
+function appendRestoredAssistantBubble(text, meta) {
+    if (!meta) {
+        // No metadata (older conversation, migration case) — fall back to plain
+        appendStaticAssistantBubble(text);
+        return;
+    }
+    const node = assistantTpl.content.firstElementChild.cloneNode(true);
+
+    // Route chip
+    const chip = node.querySelector('.route-chip');
+    chip.textContent = ROUTE_LABELS[meta.route] || meta.route;
+    chip.className = 'route-chip visible' + (meta.route === 'offtopic' ? ' offtopic' : '');
+
+    // Dim dots not in this route's subset; mark ran dots completed
+    const ran = new Set(meta.agentsRun || []);
+    const routeSet = new Set(ROUTE_AGENTS[meta.route] || []);
+    node.querySelectorAll('.agent-dot').forEach(d => {
+        const agent = d.dataset.agent;
+        if (!routeSet.has(agent)) d.classList.add('skipped');
+        else if (ran.has(agent)) d.classList.add('completed');
+    });
+
+    // Body: only Clarify/OffTopic replies live in the bubble body
+    const body = node.querySelector('.msg-body');
+    if (meta.route === 'clarify' || meta.route === 'offtopic') {
+        body.innerHTML = marked.parse(text || '');
+    } else if (meta.changeSummary && meta.changeSummary.trim()) {
+        body.innerHTML =
+            '<div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.35rem;">Plan updated — see right pane →</div>' +
+            '<div class="markdown-body">' + marked.parse(meta.changeSummary) + '</div>';
+    } else {
+        body.innerHTML = PLAN_UPDATED_POINTER_HTML;
+    }
+
+    // Status line: "45s · groq · llama-3.3-70b-versatile"
+    const parts = [];
+    if (meta.durationMs != null) parts.push(formatDurationMs(meta.durationMs));
+    if (meta.provider) parts.push(meta.provider.toLowerCase());
+    if (meta.model) parts.push(meta.model);
+    if (parts.length > 0) setStatus(node, parts.join(' · '));
+
+    // Agent-details disclosure — populate from restored per-agent content if present
+    const outputs = meta.agentOutputs || {};
+    const hasAnyOutput = Object.keys(outputs).some(k => outputs[k]);
+    if (hasAnyOutput) {
+        node.querySelector('.agent-details').hidden = false;
+        bindDetailsTabs(node);
+        for (const agent of AGENTS) {
+            const content = outputs[agent];
+            if (content) {
+                markDetailsTabHasContent(node, agent);
+                renderDetailsPane(node, agent, content);
+            }
+        }
+    } else {
+        node.querySelector('.agent-details').hidden = true;
+    }
+
+    chatScroll.appendChild(node);
     updateChatEmptyState();
     scrollChatToBottom();
 }
@@ -378,6 +457,7 @@ async function startTurn(message, provider) {
         route: null,
         aggregatorBuffer: '',
         planRenderTimer: null,
+        bubbleBodyRenderTimer: null,
         detailsTabRenderTimer: null
     };
     setStatus(bubble, 'Connecting…');
@@ -484,10 +564,16 @@ function handleEvent(type, data) {
             turn.agentContent[data.agent] = (turn.agentContent[data.agent] || '') + data.content;
             markDetailsTabHasContent(bubble, data.agent);
             schedulePaneRender(bubble, data.agent);
-            // Stream aggregator content live into the right pane
+            // Aggregator streaming target depends on route:
+            // clarify/offtopic → chat bubble body (chat-answer mode, plan stays untouched)
+            // everything else → right pane (plan-generation mode)
             if (data.agent === 'aggregator') {
                 turn.aggregatorBuffer += data.content;
-                schedulePlanRender(turn.aggregatorBuffer, { streaming: true });
+                if (turn.route === 'clarify' || turn.route === 'offtopic') {
+                    scheduleBubbleBodyRender(bubble, turn.aggregatorBuffer);
+                } else {
+                    schedulePlanRender(turn.aggregatorBuffer, { streaming: true });
+                }
             }
             return true;
         }
@@ -503,10 +589,16 @@ function handleEvent(type, data) {
         case 'plan-final': {
             if (data.plan) renderPlan(data.plan);
             setStatus(bubble, 'Plan updated');
-            // Surface a tiny pointer in the bubble body
-            bubble.querySelector('.msg-body').innerHTML =
-                '<em style="color:var(--text-muted);font-size:0.85rem;">Updated plan shown on the right →</em>';
-            // Refresh sidebar timestamps
+            // If Aggregator emitted a "Changes This Turn" section, show it in bubble body.
+            // Otherwise fall back to pointer (first turn Full route or non-updating agent).
+            const body = bubble.querySelector('.msg-body');
+            if (data.changeSummary && data.changeSummary.trim()) {
+                body.innerHTML =
+                    '<div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.35rem;">Plan updated — see right pane →</div>' +
+                    '<div class="markdown-body">' + marked.parse(data.changeSummary) + '</div>';
+            } else {
+                body.innerHTML = PLAN_UPDATED_POINTER_HTML;
+            }
             refreshConversationList();
             return true;
         }
@@ -542,6 +634,7 @@ function finalizeTurn(opts) {
         // Flush any pending renders
         if (turn.planRenderTimer) { clearTimeout(turn.planRenderTimer); turn.planRenderTimer = null; }
         if (turn.detailsTabRenderTimer) { clearTimeout(turn.detailsTabRenderTimer); turn.detailsTabRenderTimer = null; }
+        if (turn.bubbleBodyRenderTimer) { clearTimeout(turn.bubbleBodyRenderTimer); turn.bubbleBodyRenderTimer = null; }
         // Force final render of details panes
         if (turn.bubble) {
             for (const a of AGENTS) {
@@ -587,6 +680,19 @@ function schedulePlanRender(markdown, opts) {
     turn.planRenderTimer = setTimeout(() => {
         renderPlan(markdown, opts);
         turn.planRenderTimer = null;
+    }, 100);
+}
+
+// Throttled render into the assistant bubble's body. Used for Clarify/OffTopic where
+// Aggregator's streamed content is a chat-style answer, not a plan document.
+function scheduleBubbleBodyRender(bubble, markdown) {
+    const turn = state.currentTurn;
+    if (!turn) return;
+    if (turn.bubbleBodyRenderTimer) return;
+    turn.bubbleBodyRenderTimer = setTimeout(() => {
+        const body = bubble.querySelector('.msg-body');
+        if (body) body.innerHTML = marked.parse(markdown || '');
+        turn.bubbleBodyRenderTimer = null;
     }, 100);
 }
 
@@ -646,6 +752,14 @@ function escapeHtml(s) {
     }[c]));
 }
 function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+function formatDurationMs(ms) {
+    if (ms == null) return '';
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    const mins = Math.floor(ms / 60000);
+    const secs = Math.floor((ms % 60000) / 1000);
+    return `${mins}m ${secs}s`;
+}
 function relativeTime(iso) {
     if (!iso) return '';
     const d = new Date(iso);
