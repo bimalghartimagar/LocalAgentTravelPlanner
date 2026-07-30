@@ -174,4 +174,77 @@ public class SqliteConversationStoreTests : IAsyncLifetime
 
         result.Should().BeNull();
     }
+
+    [Fact]
+    public async Task Update_then_Get_round_trips_RequireApproval_flag()
+    {
+        var sut = new SqliteConversationStore(_connectionString);
+        var conv = await sut.CreateAsync();
+        conv.RequireApproval = true;
+        await sut.UpdateAsync(conv);
+
+        var loaded = await sut.GetAsync(conv.Id);
+        loaded.Should().NotBeNull();
+        loaded!.RequireApproval.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Update_then_Get_round_trips_PendingDecision_blob()
+    {
+        var sut = new SqliteConversationStore(_connectionString);
+        var conv = await sut.CreateAsync();
+        var outputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["researcher"] = "researcher output",
+            ["planner"] = "planner output",
+            ["auditor"] = "APPROVED"
+        };
+        conv.PendingDecision = new PendingDecision(
+            TurnIndex: 0,
+            Route: TurnRoute.Full,
+            UserMessage: "trip to Kyoto",
+            AgentsRun: new[] { "researcher", "planner", "accountant", "auditor" },
+            AgentOutputs: outputs,
+            AuditorVerdict: "APPROVED",
+            CreatedAt: DateTime.UtcNow,
+            UpstreamDurationMs: 12345,
+            Provider: "Anthropic",
+            Model: "claude-sonnet-4-5");
+        await sut.UpdateAsync(conv);
+
+        var loaded = await sut.GetAsync(conv.Id);
+        loaded.Should().NotBeNull();
+        loaded!.PendingDecision.Should().NotBeNull();
+        var pd = loaded.PendingDecision!;
+        pd.TurnIndex.Should().Be(0);
+        pd.Route.Should().Be(TurnRoute.Full);
+        pd.UserMessage.Should().Be("trip to Kyoto");
+        pd.AgentsRun.Should().BeEquivalentTo(new[] { "researcher", "planner", "accountant", "auditor" });
+        pd.AgentOutputs.Should().HaveCount(3);
+        pd.AgentOutputs["researcher"].Should().Be("researcher output");
+        pd.AuditorVerdict.Should().Be("APPROVED");
+        pd.UpstreamDurationMs.Should().Be(12345);
+        pd.Provider.Should().Be("Anthropic");
+        pd.Model.Should().Be("claude-sonnet-4-5");
+    }
+
+    [Fact]
+    public async Task Update_clears_PendingDecision_when_set_to_null()
+    {
+        var sut = new SqliteConversationStore(_connectionString);
+        var conv = await sut.CreateAsync();
+        conv.PendingDecision = new PendingDecision(
+            TurnIndex: 0, Route: TurnRoute.Replan, UserMessage: "x",
+            AgentsRun: Array.Empty<string>(),
+            AgentOutputs: new Dictionary<string, string>(),
+            AuditorVerdict: null, CreatedAt: DateTime.UtcNow,
+            UpstreamDurationMs: 100, Provider: null, Model: null);
+        await sut.UpdateAsync(conv);
+
+        conv.PendingDecision = null;
+        await sut.UpdateAsync(conv);
+
+        var loaded = await sut.GetAsync(conv.Id);
+        loaded!.PendingDecision.Should().BeNull();
+    }
 }

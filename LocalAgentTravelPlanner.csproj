@@ -16,6 +16,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Expose internal middleware (RetryingChatClient, AnthropicOptionsInjector) to the
+         test project so we can unit-test transient-failure handling without going through
+         the full ChatClientFactory factory chain. -->
+    <InternalsVisibleTo Include="LocalAgentTravelPlanner.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Anthropic.SDK" Version="5.8.0" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-preview.251219.1" />
