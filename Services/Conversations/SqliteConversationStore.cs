@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.AI;
@@ -92,6 +93,14 @@ public sealed class SqliteConversationStore : IConversationStore
         TryAddColumn(conn, "Turns", "Provider", "TEXT");
         TryAddColumn(conn, "Turns", "Model", "TEXT");
         TryAddColumn(conn, "Turns", "ChangeSummary", "TEXT");
+        TryAddColumn(conn, "Turns", "InputTokens", "INTEGER");
+        TryAddColumn(conn, "Turns", "OutputTokens", "INTEGER");
+
+        // Human-in-the-loop columns on Conversations.
+        // RequireApproval: opt-in flag (defaults 0 = off for backwards compatibility).
+        // PendingDecisionJson: null unless a turn is paused awaiting user decision.
+        TryAddColumn(conn, "Conversations", "RequireApproval", "INTEGER NOT NULL DEFAULT 0");
+        TryAddColumn(conn, "Conversations", "PendingDecisionJson", "TEXT");
     }
 
     private static void TryAddColumn(SqliteConnection conn, string table, string col, string type)
@@ -113,8 +122,8 @@ public sealed class SqliteConversationStore : IConversationStore
         await using var conn = OpenConnection();
         await conn.OpenAsync(cancellationToken);
         await conn.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO Conversations (Id, Title, LatestPlan, CreatedAt, LastActivity) " +
-            "VALUES (@Id, @Title, @LatestPlan, @CreatedAt, @LastActivity)",
+            "INSERT INTO Conversations (Id, Title, LatestPlan, CreatedAt, LastActivity, RequireApproval, PendingDecisionJson) " +
+            "VALUES (@Id, @Title, @LatestPlan, @CreatedAt, @LastActivity, 0, NULL)",
             new
             {
                 conv.Id,
@@ -138,7 +147,7 @@ public sealed class SqliteConversationStore : IConversationStore
         await conn.ExecuteAsync(new CommandDefinition("PRAGMA foreign_keys=ON;", cancellationToken: cancellationToken));
 
         var row = await conn.QuerySingleOrDefaultAsync<ConvRow>(new CommandDefinition(
-            "SELECT Id, Title, LatestPlan, CreatedAt, LastActivity FROM Conversations WHERE Id = @Id",
+            "SELECT Id, Title, LatestPlan, CreatedAt, LastActivity, RequireApproval, PendingDecisionJson FROM Conversations WHERE Id = @Id",
             new { Id = id },
             cancellationToken: cancellationToken));
         if (row == null) return null;
@@ -149,7 +158,7 @@ public sealed class SqliteConversationStore : IConversationStore
             cancellationToken: cancellationToken));
 
         var turnRows = await conn.QueryAsync<TurnRow>(new CommandDefinition(
-            "SELECT TurnIndex, Route, AgentsRun, CreatedAt, DurationMs, Provider, Model, ChangeSummary FROM Turns WHERE ConversationId = @Id ORDER BY TurnIndex",
+            "SELECT TurnIndex, Route, AgentsRun, CreatedAt, DurationMs, Provider, Model, ChangeSummary, InputTokens, OutputTokens FROM Turns WHERE ConversationId = @Id ORDER BY TurnIndex",
             new { Id = id },
             cancellationToken: cancellationToken));
 
@@ -174,7 +183,9 @@ public sealed class SqliteConversationStore : IConversationStore
             Title = row.Title,
             LatestPlan = row.LatestPlan,
             CreatedAt = ParseDate(row.CreatedAt),
-            LastActivity = ParseDate(row.LastActivity)
+            LastActivity = ParseDate(row.LastActivity),
+            RequireApproval = row.RequireApproval != 0,
+            PendingDecision = DeserializePending(row.PendingDecisionJson)
         };
 
         foreach (var m in msgRows)
@@ -196,7 +207,9 @@ public sealed class SqliteConversationStore : IConversationStore
                 t.DurationMs,
                 t.Provider,
                 t.Model,
-                t.ChangeSummary));
+                t.ChangeSummary,
+                t.InputTokens,
+                t.OutputTokens));
         }
 
         return conv;
@@ -215,12 +228,15 @@ public sealed class SqliteConversationStore : IConversationStore
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(cancellationToken);
 
         var updated = await conn.ExecuteAsync(new CommandDefinition(
-            "UPDATE Conversations SET Title=@Title, LatestPlan=@LatestPlan, LastActivity=@LastActivity WHERE Id=@Id",
+            "UPDATE Conversations SET Title=@Title, LatestPlan=@LatestPlan, LastActivity=@LastActivity, " +
+            "RequireApproval=@RequireApproval, PendingDecisionJson=@PendingDecisionJson WHERE Id=@Id",
             new
             {
                 conversation.Title,
                 conversation.LatestPlan,
                 LastActivity = FormatDate(conversation.LastActivity),
+                RequireApproval = conversation.RequireApproval ? 1 : 0,
+                PendingDecisionJson = SerializePending(conversation.PendingDecision),
                 conversation.Id
             },
             transaction: tx,
@@ -288,12 +304,14 @@ public sealed class SqliteConversationStore : IConversationStore
                     DurationMs = t.DurationMs,
                     Provider = t.Provider,
                     Model = t.Model,
-                    ChangeSummary = t.ChangeSummary
+                    ChangeSummary = t.ChangeSummary,
+                    InputTokens = t.InputTokens,
+                    OutputTokens = t.OutputTokens
                 });
             }
             await conn.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO Turns (ConversationId, TurnIndex, Route, AgentsRun, CreatedAt, DurationMs, Provider, Model, ChangeSummary) " +
-                "VALUES (@ConversationId, @TurnIndex, @Route, @AgentsRun, @CreatedAt, @DurationMs, @Provider, @Model, @ChangeSummary)",
+                "INSERT INTO Turns (ConversationId, TurnIndex, Route, AgentsRun, CreatedAt, DurationMs, Provider, Model, ChangeSummary, InputTokens, OutputTokens) " +
+                "VALUES (@ConversationId, @TurnIndex, @Route, @AgentsRun, @CreatedAt, @DurationMs, @Provider, @Model, @ChangeSummary, @InputTokens, @OutputTokens)",
                 turnRows,
                 transaction: tx,
                 cancellationToken: cancellationToken));
@@ -388,10 +406,23 @@ public sealed class SqliteConversationStore : IConversationStore
         _ => ChatRole.User
     };
 
+    // Pending-decision blob is small (~10-30 KB with three agent outputs) and only read on
+    // conversation load; JSON keeps schema evolution painless vs a normalized side table.
+    private static readonly JsonSerializerOptions PendingJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private static string? SerializePending(PendingDecision? pd)
+        => pd == null ? null : JsonSerializer.Serialize(pd, PendingJsonOptions);
+
+    private static PendingDecision? DeserializePending(string? json)
+        => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize<PendingDecision>(json, PendingJsonOptions);
+
     // Row DTOs for Dapper mapping — kept private to this file
-    private sealed record ConvRow(string Id, string? Title, string? LatestPlan, string CreatedAt, string LastActivity);
+    private sealed record ConvRow(string Id, string? Title, string? LatestPlan, string CreatedAt, string LastActivity, long RequireApproval, string? PendingDecisionJson);
     private sealed record MsgRow(string Role, string Content);
     private sealed record SummaryRow(string Id, string? Title, string LastActivity);
-    private sealed record TurnRow(long TurnIndex, string Route, string AgentsRun, string CreatedAt, long? DurationMs, string? Provider, string? Model, string? ChangeSummary);
+    private sealed record TurnRow(long TurnIndex, string Route, string AgentsRun, string CreatedAt, long? DurationMs, string? Provider, string? Model, string? ChangeSummary, long? InputTokens, long? OutputTokens);
     private sealed record AgentContentRow(long TurnIndex, string Agent, string Content);
 }

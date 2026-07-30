@@ -72,6 +72,10 @@
                         placeholder="Describe your trip, or ask a follow-up question..."
                         minlength="10" maxlength="2000" required rows="2"></textarea>
                     <div class="composer-row">
+                        <label class="approval-toggle" title="Pause after Auditor and require approval before finalizing">
+                            <input type="checkbox" id="require-approval-toggle">
+                            Require approval
+                        </label>
                         <span class="char-count" id="char-count">0 / 2000</span>
                         <button type="button" class="btn btn-danger" id="cancel-btn" style="display:none">Cancel</button>
                         <button type="submit" class="btn btn-primary" id="submit-btn">Send</button>
@@ -109,6 +113,27 @@
                 <div class="agent-dot" data-agent="aggregator" title="Aggregator"><span>5</span></div>
             </div>
             <div class="msg-status"></div>
+            <!-- Approval card: shown when the turn pauses awaiting user decision. -->
+            <div class="approval-card" hidden>
+                <div class="approval-header">
+                    <span class="approval-title">Approve this plan draft?</span>
+                    <span class="approval-verdict"></span>
+                </div>
+                <div class="approval-body">
+                    Upstream agents finished. Aggregator will not run until you decide.
+                </div>
+                <div class="approval-feedback" hidden>
+                    <textarea class="approval-feedback-input"
+                        placeholder="What would you change? (required to replan)"
+                        maxlength="2000" rows="2"></textarea>
+                </div>
+                <div class="approval-actions">
+                    <button type="button" class="btn btn-primary approval-approve">Approve</button>
+                    <button type="button" class="btn approval-reject">Reject</button>
+                    <button type="button" class="btn approval-reject-replan" hidden>Reject &amp; replan</button>
+                    <button type="button" class="btn btn-danger approval-cancel" hidden>Cancel draft</button>
+                </div>
+            </div>
             <details class="agent-details" hidden>
                 <summary>Agent details</summary>
                 <div class="agent-tabs">

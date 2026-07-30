@@ -27,16 +27,28 @@ namespace LocalAgentTravelPlanner.Services
         private const string GroqOpenAIEndpoint = "https://api.groq.com/openai/v1";
         private const string OpenRouterOpenAIEndpoint = "https://openrouter.ai/api/v1";
 
-        private const string DefaultAnthropicModel = "claude-sonnet-4-20250514";
-        private const string DefaultGeminiModel = "gemini-2.5-flash";
-        private const string DefaultGroqModel = "llama-3.1-8b-instant"; // higher TPM headroom on free tier; smaller model, may loop more on tool calling
-        private const string DefaultOpenRouterModel = "deepseek/deepseek-chat"; // cheap ($0.14/$0.28 per M), tools capable, good for multi-agent
-
-        // Ollama default — overridable via OLLAMA_MODEL env var. qwen3-coder:30b handles
-        // the 5-agent tool-calling workflow noticeably better than smaller models, at the
-        // cost of 5-15x more latency on local hardware. Set to qwen2.5:7b for faster
-        // local iteration when you don't need plan-quality output.
+        // Fallbacks used when the corresponding <PROVIDER>_MODEL env var is empty.
+        private const string FallbackAnthropicModel = "claude-sonnet-4-20250514";
+        private const string FallbackGeminiModel = "gemini-2.5-flash";
+        private const string FallbackGroqModel = "llama-3.1-8b-instant"; // higher TPM headroom on free tier; smaller model, may loop more on tool calling
+        private const string FallbackOpenRouterModel = "deepseek/deepseek-chat"; // cheap ($0.14/$0.28 per M), tools capable, good for multi-agent
+        // Ollama default — qwen3-coder:30b handles the 5-agent tool-calling workflow
+        // noticeably better than smaller models, at the cost of 5-15x more latency on
+        // local hardware. Set OLLAMA_MODEL=qwen2.5:7b for faster local iteration when
+        // you don't need plan-quality output.
         private const string FallbackOllamaModel = "qwen3-coder:30b";
+
+        // Env-var override wrappers so operators can pin any provider's model without a
+        // code change or full redeploy — e.g. flip Groq to `llama-3.3-70b-versatile` for
+        // an A/B run, or point OpenRouter at `openai/gpt-4o-mini` for a cost calibration.
+        private static string DefaultAnthropicModel  => Env("ANTHROPIC_MODEL",  FallbackAnthropicModel);
+        private static string DefaultGeminiModel     => Env("GEMINI_MODEL",     FallbackGeminiModel);
+        private static string DefaultGroqModel       => Env("GROQ_MODEL",       FallbackGroqModel);
+        private static string DefaultOpenRouterModel => Env("OPEN_ROUTER_MODEL", FallbackOpenRouterModel);
+        private static string DefaultOllamaModel     => Env("OLLAMA_MODEL",     FallbackOllamaModel);
+
+        private static string Env(string key, string fallback)
+            => Environment.GetEnvironmentVariable(key) is { Length: > 0 } v ? v : fallback;
 
         // Caps tool-calling rounds inside a single LLM request to stop runaway loops on
         // mid-tier models (Llama 3.3 70B on Groq, smaller Ollama models). The legitimate
@@ -44,10 +56,6 @@ namespace LocalAgentTravelPlanner.Services
         // 8 leaves a little headroom without letting the model burn iterations re-calling
         // the same tool. Default in Microsoft.Extensions.AI is 10. See FunctionInvokingChatClient.
         private const int MaxToolIterations = 8;
-        private static string DefaultOllamaModel =>
-            Environment.GetEnvironmentVariable("OLLAMA_MODEL") is { Length: > 0 } v
-                ? v
-                : FallbackOllamaModel;
 
         public enum Provider
         {
@@ -80,6 +88,44 @@ namespace LocalAgentTravelPlanner.Services
         /// Groq is preferred over Gemini for free-tier work because its limits are more usable
         /// for the multi-agent tool-calling pattern; Gemini still wins when explicitly picked.
         /// </summary>
+        /// <summary>
+        /// Optional cheap client used exclusively for router (route classification) calls.
+        /// Router only needs to pick one of 6 tokens, so a smaller model saves cost with no
+        /// quality impact. Opt in via <c>ROUTER_PROVIDER</c> + <c>ROUTER_MODEL</c> env vars;
+        /// returns null if neither is set (callers should fall back to the main agent client).
+        /// </summary>
+        public static (IChatClient Client, Provider Provider, string Model)? CreateRouterClientIfConfigured()
+        {
+            var providerToken = Environment.GetEnvironmentVariable("ROUTER_PROVIDER");
+            var modelOverride = Environment.GetEnvironmentVariable("ROUTER_MODEL");
+            if (string.IsNullOrEmpty(providerToken) && string.IsNullOrEmpty(modelOverride)) return null;
+
+            // If only ROUTER_MODEL is set (no provider), we need a provider to satisfy the
+            // factory. Fall back to the same auto-detected provider as the main client.
+            Provider provider;
+            if (!string.IsNullOrEmpty(providerToken))
+            {
+                if (!Enum.TryParse<Provider>(providerToken, ignoreCase: true, out provider))
+                    return null;
+            }
+            else
+            {
+                var (_, autoProvider, _) = CreateWithAutoDetect(null);
+                provider = autoProvider;
+            }
+
+            var model = modelOverride ?? provider switch
+            {
+                Provider.Anthropic   => "claude-haiku-4-5-20251001",
+                Provider.Gemini      => "gemini-2.5-flash",
+                Provider.Groq        => "llama-3.1-8b-instant",
+                Provider.OpenRouter  => "openai/gpt-4o-mini",
+                _                    => DefaultOllamaModel
+            };
+
+            return (Create(provider, model), provider, model);
+        }
+
         public static (IChatClient Client, Provider Provider, string Model) CreateWithAutoDetect(
             string? preferredProvider = null)
         {
@@ -141,6 +187,7 @@ namespace LocalAgentTravelPlanner.Services
             return new ChatClientBuilder(baseClient)
                 .UseFunctionInvocation(loggerFactory: null,
                     configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Use(inner => new TokenCountingChatClient(inner))
                 .Build();
         }
 
@@ -165,6 +212,7 @@ namespace LocalAgentTravelPlanner.Services
                 .Use(inner => new RetryingChatClient(inner))
                 .UseFunctionInvocation(loggerFactory: null,
                     configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Use(inner => new TokenCountingChatClient(inner))
                 .Build();
         }
 
@@ -189,6 +237,7 @@ namespace LocalAgentTravelPlanner.Services
                 .Use(inner => new RetryingChatClient(inner))
                 .UseFunctionInvocation(loggerFactory: null,
                     configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Use(inner => new TokenCountingChatClient(inner))
                 .Build();
         }
 
@@ -215,6 +264,7 @@ namespace LocalAgentTravelPlanner.Services
                 .Use(inner => new RetryingChatClient(inner))
                 .UseFunctionInvocation(loggerFactory: null,
                     configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Use(inner => new TokenCountingChatClient(inner))
                 .Build();
         }
 
@@ -237,6 +287,7 @@ namespace LocalAgentTravelPlanner.Services
                 .Use(inner => new AnthropicOptionsInjector(inner, modelToInject))
                 .UseFunctionInvocation(loggerFactory: null,
                     configure: fic => fic.MaximumIterationsPerRequest = MaxToolIterations)
+                .Use(inner => new TokenCountingChatClient(inner))
                 .Build();
         }
     }
@@ -310,6 +361,78 @@ namespace LocalAgentTravelPlanner.Services
             var baseMs = 1000 * (int)Math.Pow(2, attempt);
             var jitterMs = Jitter.Next(0, 500);
             return Task.Delay(baseMs + jitterMs, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Accumulates <see cref="UsageDetails"/> across every LLM round-trip on a single
+    /// <see cref="IChatClient"/>. Sits at the top of the middleware chain so it sees
+    /// all sub-turns of function-calling agents (Researcher's tool loop, Auditor's tool
+    /// loop, etc.) as one aggregate cost.
+    ///
+    /// Resolve via <c>chatClient.GetService(typeof(TokenCountingChatClient))</c> to read
+    /// <see cref="InputTokens"/> / <see cref="OutputTokens"/> after the workflow completes.
+    /// Because <see cref="ChatClientFactory.CreateWithAutoDetect"/> builds a fresh client
+    /// per API request, the counters are naturally turn-scoped.
+    /// </summary>
+    public sealed class TokenCountingChatClient : DelegatingChatClient
+    {
+        private long _inputTokens;
+        private long _outputTokens;
+
+        public TokenCountingChatClient(IChatClient inner) : base(inner) { }
+
+        public long InputTokens => Interlocked.Read(ref _inputTokens);
+        public long OutputTokens => Interlocked.Read(ref _outputTokens);
+
+        public void Reset()
+        {
+            Interlocked.Exchange(ref _inputTokens, 0);
+            Interlocked.Exchange(ref _outputTokens, 0);
+        }
+
+        public override async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var response = await base.GetResponseAsync(messages, options, cancellationToken);
+            Add(response.Usage);
+            return response;
+        }
+
+        public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            // Providers typically send Usage on the final update chunk (e.g. OpenAI-compat
+            // servers with `stream_options.include_usage`). Sum whatever arrives.
+            await foreach (var update in base.GetStreamingResponseAsync(messages, options, cancellationToken))
+            {
+                if (update.Contents != null)
+                {
+                    foreach (var content in update.Contents)
+                    {
+                        if (content is UsageContent uc) Add(uc.Details);
+                    }
+                }
+                yield return update;
+            }
+        }
+
+        private void Add(UsageDetails? usage)
+        {
+            if (usage == null) return;
+            if (usage.InputTokenCount is long input) Interlocked.Add(ref _inputTokens, input);
+            if (usage.OutputTokenCount is long output) Interlocked.Add(ref _outputTokens, output);
+        }
+
+        // Expose ourself so downstream code can retrieve counters without knowing chain shape.
+        public override object? GetService(Type serviceType, object? serviceKey = null)
+        {
+            if (serviceType == typeof(TokenCountingChatClient)) return this;
+            return base.GetService(serviceType, serviceKey);
         }
     }
 

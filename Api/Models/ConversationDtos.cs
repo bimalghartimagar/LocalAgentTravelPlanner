@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using LocalAgentTravelPlanner.Services.Conversations;
 
 namespace LocalAgentTravelPlanner.Api.Models;
 
@@ -35,6 +36,8 @@ public class ConversationDetailResponse
     public string? LatestPlan { get; init; }
     public required DateTime CreatedAt { get; init; }
     public required DateTime LastActivity { get; init; }
+    public required bool RequireApproval { get; init; }
+    public PendingDecisionDto? PendingDecision { get; init; }
 }
 
 public class ConversationMessageDto
@@ -57,6 +60,10 @@ public class ConversationTurnDto
     public string? Model { get; init; }
     /// <summary>Aggregator's per-turn "what changed" bullet list. Only present on subset routes.</summary>
     public string? ChangeSummary { get; init; }
+    /// <summary>Sum of input tokens across every LLM call this turn (null if provider did not report usage).</summary>
+    public long? InputTokens { get; init; }
+    /// <summary>Sum of output tokens across every LLM call this turn.</summary>
+    public long? OutputTokens { get; init; }
 }
 
 public class ConversationTurnApiResponse
@@ -70,6 +77,60 @@ public class ConversationTurnApiResponse
     public double ProcessingTimeSeconds { get; init; }
     public required string Provider { get; init; }
     public required string Model { get; init; }
+    /// <summary>Set when the turn paused for user approval. Client must call the decision endpoint next.</summary>
+    public PendingDecisionDto? PendingDecision { get; init; }
+}
+
+/// <summary>Serializable projection of <see cref="Services.Conversations.PendingDecision"/>.</summary>
+public class PendingDecisionDto
+{
+    public required int TurnIndex { get; init; }
+    public required string Route { get; init; }
+    public required string UserMessage { get; init; }
+    public required IReadOnlyList<string> AgentsRun { get; init; }
+    public required IReadOnlyDictionary<string, string> AgentOutputs { get; init; }
+    public string? AuditorVerdict { get; init; }
+    public required DateTime CreatedAt { get; init; }
+    public required long UpstreamDurationMs { get; init; }
+    public string? Provider { get; init; }
+    public string? Model { get; init; }
+
+    public static PendingDecisionDto From(PendingDecision src) => new()
+    {
+        TurnIndex = src.TurnIndex,
+        Route = src.Route.ToString().ToLowerInvariant(),
+        UserMessage = src.UserMessage,
+        AgentsRun = src.AgentsRun,
+        AgentOutputs = src.AgentOutputs,
+        AuditorVerdict = src.AuditorVerdict,
+        CreatedAt = src.CreatedAt,
+        UpstreamDurationMs = src.UpstreamDurationMs,
+        Provider = src.Provider,
+        Model = src.Model
+    };
+}
+
+/// <summary>Body for <c>POST /api/conversations/{id}/decision</c>.</summary>
+public class ConversationDecisionRequest
+{
+    /// <summary><c>true</c> = approve and run Aggregator. <c>false</c> = reject.</summary>
+    public required bool Approve { get; init; }
+
+    /// <summary>Optional rejection feedback. Ignored on approve.</summary>
+    [MaxLength(2000, ErrorMessage = "Feedback must not exceed 2000 characters")]
+    public string? Feedback { get; init; }
+
+    /// <summary>
+    /// On reject, when <c>true</c> and <see cref="Feedback"/> is non-empty, immediately chain
+    /// a synthetic Replan turn using the feedback as the new user message. Ignored on approve.
+    /// </summary>
+    public bool Replan { get; init; }
+}
+
+/// <summary>Body for <c>PATCH /api/conversations/{id}/settings</c>.</summary>
+public class ConversationSettingsRequest
+{
+    public bool? RequireApproval { get; init; }
 }
 
 /// <summary>Payload for the <c>route</c> SSE event.</summary>

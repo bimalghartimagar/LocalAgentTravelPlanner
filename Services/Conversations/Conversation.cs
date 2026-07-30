@@ -57,7 +57,41 @@ public sealed class Conversation
     /// browser session, not just plain text bubbles.
     /// </summary>
     public List<TurnMetadata> Turns { get; init; } = new();
+
+    /// <summary>
+    /// Human-in-the-loop toggle. When true, plan-changing turns (Full / Replan / Rebudget /
+    /// Reaudit) pause after Auditor and wait for a user decision before running Aggregator.
+    /// Clarify / OffTopic routes are never gated (no plan mutation to gate).
+    /// </summary>
+    public bool RequireApproval { get; set; }
+
+    /// <summary>
+    /// Non-null while a turn is paused awaiting user approve/reject. Blocks new turns
+    /// on the same conversation with HTTP 409 until resolved via the decision endpoint.
+    /// Cleared on approve (after Aggregator runs) or reject (after commit/replan).
+    /// </summary>
+    public PendingDecision? PendingDecision { get; set; }
 }
+
+/// <summary>
+/// State captured mid-workflow when <see cref="Conversation.RequireApproval"/> is true.
+/// The upstream pipeline (Researcher..Auditor) has completed and its output is buffered
+/// here; Aggregator runs later on resume via <c>/api/conversations/{id}/decision</c>.
+/// </summary>
+public sealed record PendingDecision(
+    int TurnIndex,
+    TurnRoute Route,
+    string UserMessage,
+    IReadOnlyList<string> AgentsRun,
+    IReadOnlyDictionary<string, string> AgentOutputs,
+    string? AuditorVerdict,
+    DateTime CreatedAt,
+    long UpstreamDurationMs,
+    string? Provider,
+    string? Model,
+    /// <summary>Tokens accumulated by the upstream pipeline. Added to Aggregator tokens on resume.</summary>
+    long? UpstreamInputTokens = null,
+    long? UpstreamOutputTokens = null);
 
 /// <summary>
 /// Slim per-turn record. <see cref="TurnIndex"/> is 0-based and matches the pair of
@@ -72,7 +106,11 @@ public sealed record TurnMetadata(
     long? DurationMs = null,
     string? Provider = null,
     string? Model = null,
-    string? ChangeSummary = null);
+    string? ChangeSummary = null,
+    /// <summary>Sum of input tokens across every LLM call this turn (router + all agents + tool sub-turns).</summary>
+    long? InputTokens = null,
+    /// <summary>Sum of output tokens across every LLM call this turn.</summary>
+    long? OutputTokens = null);
 
 /// <summary>Lightweight projection for the sidebar list.</summary>
 public sealed record ConversationSummary(string Id, string? Title, DateTime LastActivity);

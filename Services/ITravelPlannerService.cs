@@ -61,10 +61,31 @@ namespace LocalAgentTravelPlanner.Services
         /// then per-agent events, then a terminal <see cref="ProgressStatus.PlanFinal"/> or
         /// <see cref="ProgressStatus.Clarified"/>, then <see cref="ProgressStatus.Completed"/>.
         /// On error, the conversation is not mutated.
+        ///
+        /// When <see cref="Conversation.RequireApproval"/> is true and the route is a plan-
+        /// changing route (Full / Replan / Rebudget / Reaudit), the stream stops after the
+        /// Auditor with <see cref="ProgressStatus.ApprovalRequired"/> and persists a
+        /// <see cref="PendingDecision"/> on the conversation. Aggregator runs later via
+        /// <see cref="ResolveDecisionStreamingAsync"/>.
         /// </summary>
         IAsyncEnumerable<TravelPlanProgress> ContinueConversationStreamingAsync(
             Conversation conversation,
             string newMessage,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Resolves a paused turn (<see cref="Conversation.PendingDecision"/> non-null).
+        /// <paramref name="approve"/> = true runs the Aggregator on the buffered upstream
+        /// output and commits the plan turn. <paramref name="approve"/> = false commits
+        /// a rejection turn; if <paramref name="feedback"/> is non-empty and
+        /// <paramref name="replan"/> is true, a synthetic Replan turn is chained immediately.
+        /// Throws <see cref="InvalidOperationException"/> if no pending decision exists.
+        /// </summary>
+        IAsyncEnumerable<TravelPlanProgress> ResolveDecisionStreamingAsync(
+            Conversation conversation,
+            bool approve,
+            string? feedback,
+            bool replan,
             CancellationToken cancellationToken = default);
     }
 
@@ -81,6 +102,13 @@ namespace LocalAgentTravelPlanner.Services
 
         /// <summary>Non-null when the turn produced a chat answer instead of an updated plan.</summary>
         public string? AssistantReply { get; init; }
+
+        /// <summary>
+        /// Non-null when <see cref="Conversation.RequireApproval"/> paused the turn after
+        /// Auditor. Caller should route the user through the decision endpoint before any
+        /// further turns will succeed on this conversation.
+        /// </summary>
+        public PendingDecision? PendingDecision { get; init; }
     }
 
     /// <summary>
@@ -128,6 +156,9 @@ namespace LocalAgentTravelPlanner.Services
 
         /// <summary>Change summary markdown (bullets) — set on subset-route PlanFinal events.</summary>
         public string? ChangeSummary { get; init; }
+
+        /// <summary>Set only on <see cref="ProgressStatus.ApprovalRequired"/> events.</summary>
+        public PendingDecision? PendingDecision { get; init; }
     }
 
     public enum ProgressStatus
@@ -141,6 +172,8 @@ namespace LocalAgentTravelPlanner.Services
         /// <summary>Aggregator finished and <c>LatestPlan</c> was updated. <c>PartialOutput</c> = full plan markdown.</summary>
         PlanFinal,
         /// <summary>Clarify / off-topic turn finished without changing the plan. <c>PartialOutput</c> = assistant reply.</summary>
-        Clarified
+        Clarified,
+        /// <summary>Upstream pipeline finished; user decision needed before Aggregator runs. <see cref="TravelPlanProgress.PendingDecision"/> is populated.</summary>
+        ApprovalRequired
     }
 }

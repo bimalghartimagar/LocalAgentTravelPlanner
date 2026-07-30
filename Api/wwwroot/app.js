@@ -44,7 +44,9 @@ const state = {
     latestPlan: null,
     streaming: false,
     abortController: null,
-    currentTurn: null    // { bubble, agentContent, currentAgent, route, aggregatorBuffer, planRenderTimer }
+    currentTurn: null,   // { bubble, agentContent, currentAgent, route, aggregatorBuffer, planRenderTimer }
+    requireApproval: false,      // Per-conversation setting; toggle drives it.
+    pendingDecision: null        // Set when the current conversation is paused mid-turn.
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -67,6 +69,7 @@ const cancelBtn = document.getElementById('cancel-btn');
 const charCount = document.getElementById('char-count');
 const errorBanner = document.getElementById('error-banner');
 const assistantTpl = document.getElementById('tpl-assistant-turn');
+const approvalToggle = document.getElementById('require-approval-toggle');
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -165,6 +168,30 @@ newConvBtn.addEventListener('click', async () => {
     await createConversation();
 });
 
+// Toggle drives per-conversation RequireApproval via PATCH. Disabled while a turn is
+// streaming — flipping mid-turn is meaningless (the gate decision already happened).
+approvalToggle.addEventListener('change', async () => {
+    if (state.streaming) { approvalToggle.checked = state.requireApproval; return; }
+    if (!state.conversationId) {
+        // Remember the preference; it will apply once a conversation exists.
+        state.requireApproval = approvalToggle.checked;
+        return;
+    }
+    const newValue = approvalToggle.checked;
+    try {
+        const res = await fetch(`/api/conversations/${state.conversationId}/settings`, {
+            method: 'PATCH',
+            headers: apiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ requireApproval: newValue })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        state.requireApproval = newValue;
+    } catch {
+        approvalToggle.checked = state.requireApproval;
+        showError('Failed to update approval setting.');
+    }
+});
+
 async function createConversation() {
     try {
         const res = await fetch('/api/conversations', { method: 'POST', headers: apiHeaders() });
@@ -173,8 +200,18 @@ async function createConversation() {
         const data = await res.json();
         state.conversationId = data.id;
         sessionStorage.setItem('conversationId', data.id);
+        state.pendingDecision = null;
         clearChat();
         clearPlan();
+        // Apply pre-toggle preference if user checked "Require approval" before creating.
+        if (approvalToggle.checked && !state.requireApproval) {
+            state.requireApproval = true;
+            fetch(`/api/conversations/${data.id}/settings`, {
+                method: 'PATCH',
+                headers: apiHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ requireApproval: true })
+            }).catch(() => { /* best-effort; toggle handler will re-emit if user re-checks */ });
+        }
         await refreshConversationList();
         requestInput.focus();
         return data.id;
@@ -228,11 +265,54 @@ async function loadConversation(id) {
             }
         }
         renderPlan(data.latestPlan);
+
+        // Reflect the persisted approval toggle in the composer checkbox.
+        state.requireApproval = !!data.requireApproval;
+        approvalToggle.checked = state.requireApproval;
+
+        // If a pending decision survived a refresh, render the user's pending message
+        // and the approval card so they can resume or cancel.
+        state.pendingDecision = data.pendingDecision || null;
+        if (state.pendingDecision) restorePendingDecisionUI(state.pendingDecision);
+
         updateChatEmptyState();
         return true;
     } catch {
         return false;
     }
+}
+
+/// Rebuilds the approval-required UI after page refresh. Adds the pending user message
+/// (not yet in history — it commits with the assistant reply on approve) plus a fresh
+/// assistant bubble carrying the approval card and per-agent details.
+function restorePendingDecisionUI(pending) {
+    appendUserBubble(pending.userMessage);
+    const bubble = appendStreamingAssistantBubble();
+    // Populate route chip + pipeline dots from the pending metadata so the UI matches
+    // what a live approval-required event would have produced.
+    const chip = bubble.querySelector('.route-chip');
+    chip.textContent = ROUTE_LABELS[pending.route] || pending.route;
+    chip.className = 'route-chip visible';
+    const ran = new Set(pending.agentsRun || []);
+    const routeSet = new Set(ROUTE_AGENTS[pending.route] || []);
+    bubble.querySelectorAll('.agent-dot').forEach(d => {
+        const agent = d.dataset.agent;
+        if (!routeSet.has(agent)) d.classList.add('skipped');
+        else if (ran.has(agent)) d.classList.add('completed');
+        // Aggregator dot stays inactive — it hasn't run yet
+    });
+    // Wire the details tabs and populate the per-agent panes.
+    bubble.querySelector('.agent-details').hidden = false;
+    bindDetailsTabs(bubble);
+    const outputs = pending.agentOutputs || {};
+    for (const agent of AGENTS) {
+        if (outputs[agent]) {
+            markDetailsTabHasContent(bubble, agent);
+            renderDetailsPane(bubble, agent, outputs[agent]);
+        }
+    }
+    setStatus(bubble, `Awaiting decision (${pending.provider || 'unknown'} · ${pending.model || 'unknown'})`);
+    showApprovalCard(bubble, pending);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -436,6 +516,10 @@ cancelBtn.addEventListener('click', () => {
 // Per-turn streaming
 // ─────────────────────────────────────────────────────────────────────────
 async function startTurn(message, provider) {
+    if (state.pendingDecision) {
+        showError('Resolve the pending draft (approve, reject, or cancel) before sending a new message.');
+        return;
+    }
     state.streaming = true;
     submitBtn.style.display = 'none';
     cancelBtn.style.display = 'inline-block';
@@ -474,11 +558,12 @@ async function startTurn(message, provider) {
             headers: apiHeaders()
         });
 
-        if (res.status === 401) { promptForKey(); finalizeTurn({ cancelled: true }); return; }
-        if (res.status === 404) { showError('Conversation no longer exists.'); finalizeTurn({ cancelled: true }); return; }
-        if (res.status === 409) { showError('Another turn is already in progress for this conversation. Wait for it to finish.'); finalizeTurn({ cancelled: true }); return; }
-        if (res.status === 429) { showError('Too many requests. Try again in a minute.'); finalizeTurn({ cancelled: true }); return; }
-        if (!res.ok) { showError(`Server error: ${res.status}`); finalizeTurn({ cancelled: true }); return; }
+        if (!res.ok) {
+            const handled = await handleApiErrorResponse(res);
+            finalizeTurn({ cancelled: true });
+            if (!handled) showError(`Server error: ${res.status}`);
+            return;
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -612,6 +697,17 @@ function handleEvent(type, data) {
             return true;
         }
 
+        case 'approval-required': {
+            // Upstream finished, Aggregator paused. Persist pending state and show the
+            // approval card on the current bubble. Returning false ends the current SSE
+            // read loop — a fresh stream opens when the user clicks approve or reject.
+            state.pendingDecision = data;
+            setStatus(bubble, `Awaiting decision (${data.provider || 'unknown'} · ${data.model || 'unknown'})`);
+            showApprovalCard(bubble, data);
+            refreshConversationList();
+            return false;
+        }
+
         case 'error': {
             showError(data.content || 'An error occurred');
             const dot = turn.currentAgent
@@ -648,15 +744,18 @@ function finalizeTurn(opts) {
             planScroll.classList.remove('streaming');
         }
     }
+    // When a pending decision is outstanding, keep the composer blocked until the user
+    // resolves it — the server will 409 on any new message anyway.
+    const paused = !!state.pendingDecision;
     state.currentTurn = null;
     state.streaming = false;
     state.abortController = null;
     submitBtn.style.display = 'inline-block';
     cancelBtn.style.display = 'none';
-    requestInput.disabled = false;
-    providerSelect.disabled = false;
+    requestInput.disabled = paused;
+    providerSelect.disabled = paused;
     newConvBtn.disabled = false;
-    requestInput.focus();
+    if (!paused) requestInput.focus();
     refreshConversationList();
 }
 
@@ -723,6 +822,179 @@ function scheduleDetailsTabSwitch(bubble, agent) {
     }
 }
 
+/// Renders the approval card on the given bubble and wires up its buttons. Card is
+/// idempotent — safe to call twice (later calls just re-populate the verdict/actions).
+function showApprovalCard(bubble, pending) {
+    const card = bubble.querySelector('.approval-card');
+    if (!card) return;
+    card.hidden = false;
+
+    const verdict = (pending.auditorVerdict || '').toLowerCase();
+    const verdictEl = card.querySelector('.approval-verdict');
+    verdictEl.textContent = verdict ? verdict : 'unknown';
+    verdictEl.className = 'approval-verdict ' + (verdict || '');
+
+    const feedbackWrap = card.querySelector('.approval-feedback');
+    const feedbackInput = card.querySelector('.approval-feedback-input');
+    const approveBtn = card.querySelector('.approval-approve');
+    const rejectBtn = card.querySelector('.approval-reject');
+    const rejectReplanBtn = card.querySelector('.approval-reject-replan');
+    const cancelBtn = card.querySelector('.approval-cancel');
+
+    // Reset any prior wiring — cloneNode strips listeners, faster than tracking handles
+    const rewire = (btn) => {
+        const clone = btn.cloneNode(true);
+        btn.replaceWith(clone);
+        return clone;
+    };
+    const approveFresh = rewire(approveBtn);
+    const rejectFresh = rewire(rejectBtn);
+    const rejectReplanFresh = rewire(rejectReplanBtn);
+    const cancelFresh = rewire(cancelBtn);
+
+    // Reject button toggles feedback textarea + shows the replan button. Second click
+    // (with empty feedback) posts a plain rejection.
+    let feedbackOpen = false;
+    rejectFresh.addEventListener('click', () => {
+        if (!feedbackOpen) {
+            feedbackWrap.hidden = false;
+            rejectReplanFresh.hidden = false;
+            cancelFresh.hidden = false;
+            feedbackInput.focus();
+            feedbackOpen = true;
+            return;
+        }
+        // Second click on Reject = commit rejection without replan
+        resolveDecision(bubble, {
+            approve: false,
+            feedback: feedbackInput.value.trim() || null,
+            replan: false
+        });
+    });
+
+    rejectReplanFresh.addEventListener('click', () => {
+        const txt = feedbackInput.value.trim();
+        if (!txt) { feedbackInput.focus(); showError('Feedback required to replan.'); return; }
+        resolveDecision(bubble, { approve: false, feedback: txt, replan: true });
+    });
+
+    cancelFresh.addEventListener('click', async () => {
+        if (!confirm('Discard this pending draft?')) return;
+        try {
+            const res = await fetch(`/api/conversations/${state.conversationId}/pending`, {
+                method: 'DELETE',
+                headers: apiHeaders()
+            });
+            if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+            state.pendingDecision = null;
+            // Drop the paused bubble entirely; user starts fresh next turn
+            bubble.remove();
+            const paused = false;
+            requestInput.disabled = paused;
+            providerSelect.disabled = paused;
+            requestInput.focus();
+            refreshConversationList();
+        } catch { showError('Failed to cancel pending draft.'); }
+    });
+
+    approveFresh.addEventListener('click', () => {
+        resolveDecision(bubble, { approve: true, feedback: null, replan: false });
+    });
+}
+
+/// Opens a fresh SSE stream to /decision/stream to resume the paused turn. Reuses the
+/// existing bubble so the plan renders in place, and reuses handleEvent so approve
+/// (Aggregator run) and reject-and-replan (full new turn) both drive the same UI.
+async function resolveDecision(bubble, decision) {
+    if (!state.conversationId || !state.pendingDecision) return;
+    hideError();
+
+    // Hide the approval card while resuming — reopens if the server errors out.
+    const card = bubble.querySelector('.approval-card');
+    if (card) card.hidden = true;
+
+    // Wire the turn state onto the existing bubble so aggregator content streams into
+    // the right pane exactly like a normal turn. Preserve prior agent content so the
+    // details tabs stay populated during Aggregator's run.
+    const priorOutputs = state.pendingDecision.agentOutputs || {};
+    state.currentTurn = {
+        bubble,
+        agentContent: {
+            researcher: priorOutputs.researcher || '',
+            planner: priorOutputs.planner || '',
+            accountant: priorOutputs.accountant || '',
+            auditor: priorOutputs.auditor || '',
+            aggregator: ''
+        },
+        currentAgent: null,
+        route: state.pendingDecision.route,
+        aggregatorBuffer: '',
+        planRenderTimer: null,
+        bubbleBodyRenderTimer: null,
+        detailsTabRenderTimer: null
+    };
+    state.streaming = true;
+    submitBtn.style.display = 'none';
+    cancelBtn.style.display = 'inline-block';
+    requestInput.disabled = true;
+    providerSelect.disabled = true;
+
+    // Once we start resolving, treat the previous pending state as consumed. If the
+    // server emits a NEW approval-required (e.g. reject-and-replan and gate still on),
+    // that event will re-populate state.pendingDecision.
+    state.pendingDecision = null;
+
+    const params = new URLSearchParams({
+        approve: decision.approve ? 'true' : 'false',
+        replan: decision.replan ? 'true' : 'false'
+    });
+    if (decision.feedback) params.set('feedback', decision.feedback);
+    const provider = providerSelect.value;
+    if (provider) params.set('provider', provider);
+
+    state.abortController = new AbortController();
+
+    try {
+        const res = await fetch(`/api/conversations/${state.conversationId}/decision/stream?${params}`, {
+            signal: state.abortController.signal,
+            headers: apiHeaders()
+        });
+        if (!res.ok) {
+            const handled = await handleApiErrorResponse(res);
+            finalizeTurn({ cancelled: true });
+            if (!handled) showError(`Server error: ${res.status}`);
+            return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        outer: while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            let evtType = null;
+            for (const line of lines) {
+                if (line.startsWith('event: ')) evtType = line.slice(7).trim();
+                else if (line.startsWith('data: ') && evtType) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        if (!handleEvent(evtType, data)) break outer;
+                    } catch { /* skip malformed JSON */ }
+                    evtType = null;
+                } else if (line === '') evtType = null;
+            }
+        }
+        finalizeTurn({});
+    } catch (err) {
+        if (err.name === 'AbortError') setStatus(bubble, 'Cancelled', 'error');
+        else { showError('Connection to server lost.'); setStatus(bubble, 'Disconnected', 'error'); }
+        finalizeTurn({ cancelled: true });
+    }
+}
+
 function setStatus(bubble, text, kind) {
     if (!bubble) return;
     const el = bubble.querySelector('.msg-status');
@@ -734,6 +1006,86 @@ function setStatus(bubble, text, kind) {
 // ─────────────────────────────────────────────────────────────────────────
 // Misc
 // ─────────────────────────────────────────────────────────────────────────
+/// Parses an ApiError response body and dispatches on the stable `code` field.
+/// Returns true if the code was recognized (and the appropriate UI action taken),
+/// false to let the caller fall back to a generic status-code message.
+async function handleApiErrorResponse(res) {
+    let body = null;
+    try { body = await res.json(); } catch { /* not JSON */ }
+    const code = body?.code;
+    const message = body?.error || body?.detail;
+
+    switch (code) {
+        case 'auth.api_key_missing':
+            promptForKey();
+            return true;
+
+        case 'conversation.not_found':
+            showError('Conversation no longer exists.');
+            return true;
+
+        case 'conversation.busy':
+            showError('Conversation is busy processing another request. Try again in a moment.');
+            return true;
+
+        case 'conversation.pending_decision_open': {
+            // Extras carries the PendingDecisionDto — hydrate UI so user can resolve it
+            // without a full page reload.
+            const pending = body?.extras?.pendingDecision;
+            if (pending) {
+                state.pendingDecision = pending;
+                showError('A previous draft is awaiting approval. Resolve it before sending a new message.');
+                // Rebuild the paused bubble if it was not already on screen
+                if (!document.querySelector('.approval-card:not([hidden])')) {
+                    restorePendingDecisionUI(pending);
+                }
+            } else {
+                showError('This conversation has a pending decision. Approve, reject, or cancel it before continuing.');
+            }
+            return true;
+        }
+
+        case 'conversation.pending_decision_missing':
+            showError('No pending draft to resolve — it may have already been cancelled.');
+            state.pendingDecision = null;
+            return true;
+
+        case 'validation.message_too_short':
+        case 'validation.message_too_long':
+        case 'validation.feedback_too_long':
+            showError(message || 'Validation error.');
+            return true;
+
+        case 'provider.not_configured':
+            showError(message || 'The selected LLM provider is not configured.');
+            return true;
+
+        case 'rate.limited':
+            showError('Too many requests. Try again in a minute.');
+            return true;
+
+        case 'workflow.failed':
+        case 'workflow.aggregator_empty':
+            showError(message || 'The pipeline could not produce a plan.');
+            return true;
+
+        case 'internal.unhandled':
+            showError(message || 'Something went wrong on the server.');
+            return true;
+    }
+
+    // Fallback by HTTP status when no code (older endpoints, 5xx without body)
+    switch (res.status) {
+        case 401: promptForKey(); return true;
+        case 404: showError('Not found.'); return true;
+        case 409: showError('Conflict — refresh and try again.'); return true;
+        case 429: showError('Too many requests. Try again in a minute.'); return true;
+    }
+
+    if (message) { showError(message); return true; }
+    return false;
+}
+
 function showError(msg) {
     errorBanner.textContent = msg;
     errorBanner.classList.add('visible');

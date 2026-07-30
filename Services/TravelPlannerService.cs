@@ -38,9 +38,13 @@ namespace LocalAgentTravelPlanner.Services
         };
 
         private readonly IChatClient _chatClient;
+        private readonly IChatClient _routerChatClient;
         private readonly ILogger<TravelPlannerService> _logger;
         private readonly string? _providerName;
         private readonly string? _modelName;
+        // Nullable — only present when the factory chain includes the token-counting middleware.
+        // Tests that pass a raw IChatClient get null and skip token accounting.
+        private readonly TokenCountingChatClient? _tokenCounter;
         private readonly ChatClientAgent _researcher;
         private readonly ChatClientAgent _planner;
         private readonly ChatClientAgent _accountant;
@@ -64,12 +68,16 @@ namespace LocalAgentTravelPlanner.Services
             TravelTools travelTools,
             ILogger<TravelPlannerService>? logger = null,
             string? providerName = null,
-            string? modelName = null)
+            string? modelName = null,
+            IChatClient? routerChatClient = null)
         {
             _chatClient = chatClient;
+            // Optional cheaper client dedicated to route classification; if omitted, reuse main.
+            _routerChatClient = routerChatClient ?? chatClient;
             _logger = logger ?? NullLogger<TravelPlannerService>.Instance;
             _providerName = providerName;
             _modelName = modelName;
+            _tokenCounter = chatClient.GetService(typeof(TokenCountingChatClient)) as TokenCountingChatClient;
 
             // Initialize all agents using the factory pattern
             // Factories encapsulate agent configuration (prompts, tools)
@@ -417,7 +425,10 @@ namespace LocalAgentTravelPlanner.Services
                     new(ChatRole.User, transcript.ToString())
                 };
 
-                var response = await _chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken);
+                // Route classification uses the dedicated router client when configured; falls
+                // back to the main agent client otherwise. Enables cost-tiering (Haiku/Flash
+                // for routing, Sonnet/DeepSeek for agent work).
+                var response = await _routerChatClient.GetResponseAsync(messages, cancellationToken: cancellationToken);
                 var token = (response.Text ?? string.Empty).Trim().ToLowerInvariant();
 
                 var parsed = token switch
@@ -448,6 +459,7 @@ namespace LocalAgentTravelPlanner.Services
             ArgumentNullException.ThrowIfNull(conversation);
             ArgumentException.ThrowIfNullOrWhiteSpace(newMessage);
 
+            ResetTokenCounter();
             var stopwatch = Stopwatch.StartNew();
 
             // Route decision (first turn skips the router)
@@ -485,7 +497,8 @@ namespace LocalAgentTravelPlanner.Services
                 };
             }
 
-            var agents = SelectAgents(route);
+            var gate = conversation.RequireApproval && IsGateEligible(route);
+            var agents = gate ? SelectUpstreamAgents(route) : SelectAgents(route);
             var workflow = AgentWorkflowBuilder.BuildSequential(agents);
             var input = BuildWorkflowInput(conversation, newMessage);
 
@@ -536,6 +549,42 @@ namespace LocalAgentTravelPlanner.Services
 
             stopwatch.Stop();
 
+            // Gated success: upstream ran, pause before Aggregator.
+            if (gate && agentError == null)
+            {
+                var upstreamOutputs = MaterializeAgentOutputs(agentBuffers)
+                    ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                agentBuffers.TryGetValue("Auditor", out var auditorSbGate);
+                var pending = new PendingDecision(
+                    TurnIndex: conversation.Turns.Count,
+                    Route: route,
+                    UserMessage: newMessage,
+                    AgentsRun: completedAgents.Select(n => n.ToLowerInvariant()).ToList(),
+                    AgentOutputs: upstreamOutputs,
+                    AuditorVerdict: ExtractAuditorVerdict(auditorSbGate?.ToString() ?? string.Empty),
+                    CreatedAt: DateTime.UtcNow,
+                    UpstreamDurationMs: stopwatch.ElapsedMilliseconds,
+                    Provider: _providerName,
+                    Model: _modelName,
+                    UpstreamInputTokens: _tokenCounter?.InputTokens,
+                    UpstreamOutputTokens: _tokenCounter?.OutputTokens);
+                conversation.PendingDecision = pending;
+
+                LogTurnCompleted(conversation.Id, route, completedAgents.ToArray(),
+                    stopwatch.ElapsedMilliseconds, success: true, error: null, routerUsage);
+
+                return new ConversationTurnResponse
+                {
+                    Success = true,
+                    Route = route,
+                    TravelPlan = string.Empty,
+                    AssistantReply = null,
+                    PendingDecision = pending,
+                    ProcessingTime = stopwatch.Elapsed,
+                    AgentsUsed = completedAgents.Count
+                };
+            }
+
             var rawText = aggregatorBuffer.ToString();
             var success = agentError == null && !string.IsNullOrWhiteSpace(rawText);
             var (planOnly, changeSummary) = SplitPlanAndChanges(rawText);
@@ -580,7 +629,14 @@ namespace LocalAgentTravelPlanner.Services
             ArgumentNullException.ThrowIfNull(conversation);
             ArgumentException.ThrowIfNullOrWhiteSpace(newMessage);
 
+            ResetTokenCounter();
             var turnStopwatch = Stopwatch.StartNew();
+            using var activity = Diagnostics.ActivitySource.StartActivity("conversation.turn", ActivityKind.Internal);
+            activity?.SetTag("conversation.id", conversation.Id);
+            activity?.SetTag("conversation.history_count", conversation.History.Count);
+            activity?.SetTag("provider", _providerName);
+            activity?.SetTag("model", _modelName);
+            activity?.SetTag("gate.enabled", conversation.RequireApproval);
 
             // 1. Route
             TurnRoute route;
@@ -594,6 +650,8 @@ namespace LocalAgentTravelPlanner.Services
             {
                 (route, routerUsage) = await RouteWithUsageAsync(conversation.History, newMessage, cancellationToken);
             }
+
+            activity?.SetTag("route", route.ToString());
 
             yield return new TravelPlanProgress
             {
@@ -634,11 +692,18 @@ namespace LocalAgentTravelPlanner.Services
                 yield break;
             }
 
-            // 3. Build workflow over the selected subset
-            var agents = SelectAgents(route);
+            // 3. Build workflow over the selected subset. When the human-in-the-loop gate is
+            //    active on a plan-changing route, we drop Aggregator from Phase 1 — Phase 2
+            //    (Aggregator only) runs later via ResolveDecisionStreamingAsync.
+            var gate = conversation.RequireApproval && IsGateEligible(route);
+            var agents = gate ? SelectUpstreamAgents(route) : SelectAgents(route);
             var workflow = AgentWorkflowBuilder.BuildSequential(agents);
             var input = BuildWorkflowInput(conversation, newMessage);
-            var subsetNames = AgentNamesFor(route);
+            // subsetNames drives ProgressPercent — for the gated path we use the upstream
+            // subset so progress doesn't overshoot before pause.
+            IReadOnlyList<string> subsetNames = gate
+                ? agents.Select(a => TryResolveAgent(a.Name ?? string.Empty) ?? a.Name ?? "agent").ToArray()
+                : AgentNamesFor(route);
             var completedAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             StreamingRun run = await InProcessExecution.StreamAsync(workflow, input);
@@ -743,6 +808,59 @@ namespace LocalAgentTravelPlanner.Services
                 yield break;
             }
 
+            // 4a. Approval gate: upstream ran; pause, persist PendingDecision, notify UI
+            if (gate)
+            {
+                var upstreamOutputs = MaterializeAgentOutputs(agentBuffers)
+                    ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                agentBuffers.TryGetValue("Auditor", out var auditorSbGate);
+                var auditorVerdict = ExtractAuditorVerdict(auditorSbGate?.ToString() ?? string.Empty);
+
+                turnStopwatch.Stop();
+
+                var pending = new PendingDecision(
+                    TurnIndex: conversation.Turns.Count,
+                    Route: route,
+                    UserMessage: newMessage,
+                    AgentsRun: completedAgents.Select(n => n.ToLowerInvariant()).ToList(),
+                    AgentOutputs: upstreamOutputs,
+                    AuditorVerdict: auditorVerdict,
+                    CreatedAt: DateTime.UtcNow,
+                    UpstreamDurationMs: turnStopwatch.ElapsedMilliseconds,
+                    Provider: _providerName,
+                    Model: _modelName,
+                    UpstreamInputTokens: _tokenCounter?.InputTokens,
+                    UpstreamOutputTokens: _tokenCounter?.OutputTokens);
+
+                conversation.PendingDecision = pending;
+                // Note: caller (controller) is responsible for persisting via UpdateAsync.
+
+                yield return new TravelPlanProgress
+                {
+                    CurrentAgent = "system",
+                    Status = ProgressStatus.ApprovalRequired,
+                    Route = route,
+                    ProgressPercent = 100,
+                    PendingDecision = pending
+                };
+
+                _logger.LogInformation(
+                    "Conversation turn paused for approval: ConversationId={ConversationId} " +
+                    "Route={Route} AgentsRun={AgentsRun} UpstreamDurationMs={UpstreamDurationMs} Verdict={Verdict}",
+                    conversation.Id, route.ToString(),
+                    string.Join(",", completedAgents),
+                    pending.UpstreamDurationMs, auditorVerdict);
+
+                yield return new TravelPlanProgress
+                {
+                    CurrentAgent = "Complete",
+                    Status = ProgressStatus.Completed,
+                    Route = route,
+                    ProgressPercent = 100
+                };
+                yield break;
+            }
+
             var finalText = aggregatorBuffer.ToString();
             if (string.IsNullOrWhiteSpace(finalText))
             {
@@ -808,6 +926,241 @@ namespace LocalAgentTravelPlanner.Services
             };
         }
 
+        /// <inheritdoc />
+        public async IAsyncEnumerable<TravelPlanProgress> ResolveDecisionStreamingAsync(
+            Conversation conversation,
+            bool approve,
+            string? feedback,
+            bool replan,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(conversation);
+            var pending = conversation.PendingDecision
+                ?? throw new InvalidOperationException("No pending decision on this conversation.");
+
+            // Zero the counter so Aggregator token accounting starts fresh; upstream tokens
+            // ride on pending.UpstreamInput/OutputTokens and get added back at commit time.
+            ResetTokenCounter();
+
+            if (approve)
+            {
+                await foreach (var progress in RunAggregatorPhaseAsync(conversation, pending, cancellationToken))
+                    yield return progress;
+                yield break;
+            }
+
+            // Reject path — clear the gate up-front so the recursive Replan turn (if any)
+            // is not itself gated by the same pending state.
+            conversation.PendingDecision = null;
+
+            if (replan && !string.IsNullOrWhiteSpace(feedback))
+            {
+                // Feedback becomes a synthetic user message; router will normally pick Replan
+                // but we leave the routing decision to it (weak-model calibration).
+                var syntheticMessage =
+                    $"Previous draft was rejected. Feedback: {feedback.Trim()}. Please revise the plan.";
+
+                _logger.LogInformation(
+                    "Rejected pending decision; chaining synthetic replan turn. ConversationId={ConversationId} " +
+                    "OriginalRoute={OriginalRoute}", conversation.Id, pending.Route.ToString());
+
+                await foreach (var progress in ContinueConversationStreamingAsync(
+                    conversation, syntheticMessage, cancellationToken))
+                {
+                    yield return progress;
+                }
+                yield break;
+            }
+
+            // Reject-and-close: commit a chat-style rejection turn without touching LatestPlan.
+            // The prior plan (if any) stays visible in the right pane.
+            var trimmedFeedback = feedback?.Trim();
+            var reply = string.IsNullOrEmpty(trimmedFeedback)
+                ? "Plan draft rejected. The previous plan is unchanged."
+                : $"Plan draft rejected. Feedback recorded: {trimmedFeedback}. The previous plan is unchanged.";
+
+            conversation.History.Add(new ChatMessage(ChatRole.User, pending.UserMessage));
+            conversation.History.Add(new ChatMessage(ChatRole.Assistant, reply));
+            UpdateConversationMetadata(conversation, pending.UserMessage);
+            AppendTurnMetadata(conversation, pending.Route, pending.AgentsRun,
+                pending.AgentOutputs, pending.UpstreamDurationMs, changeSummary: null);
+
+            _logger.LogInformation(
+                "Rejected pending decision (no replan). ConversationId={ConversationId} Route={Route} " +
+                "HasFeedback={HasFeedback}",
+                conversation.Id, pending.Route.ToString(), !string.IsNullOrEmpty(trimmedFeedback));
+
+            yield return new TravelPlanProgress
+            {
+                CurrentAgent = "system",
+                Status = ProgressStatus.Clarified,
+                PartialOutput = reply,
+                Route = pending.Route,
+                ProgressPercent = 100
+            };
+            yield return new TravelPlanProgress
+            {
+                CurrentAgent = "Complete",
+                Status = ProgressStatus.Completed,
+                Route = pending.Route,
+                ProgressPercent = 100
+            };
+        }
+
+        /// <summary>
+        /// Phase 2 of the approval-gated flow. Reconstructs Aggregator input from the buffered
+        /// upstream output and streams its run, then commits the completed turn.
+        /// </summary>
+        private async IAsyncEnumerable<TravelPlanProgress> RunAggregatorPhaseAsync(
+            Conversation conversation,
+            PendingDecision pending,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            using var activity = Diagnostics.ActivitySource.StartActivity("conversation.aggregator_phase", ActivityKind.Internal);
+            activity?.SetTag("conversation.id", conversation.Id);
+            activity?.SetTag("route", pending.Route.ToString());
+            activity?.SetTag("upstream_duration_ms", pending.UpstreamDurationMs);
+            activity?.SetTag("provider", _providerName);
+            activity?.SetTag("model", _modelName);
+
+            // Rebuild what Aggregator would have seen if it were the last stop in a normal
+            // sequential run: prior conversation + this turn's user request + one assistant
+            // message per upstream agent (in the order they ran).
+            var input = new List<ChatMessage>(conversation.History.Count + pending.AgentOutputs.Count + 2);
+            input.AddRange(conversation.History);
+            input.Add(new ChatMessage(ChatRole.User, pending.UserMessage));
+            foreach (var agentName in pending.AgentsRun)
+            {
+                if (pending.AgentOutputs.TryGetValue(agentName, out var content) && !string.IsNullOrEmpty(content))
+                    input.Add(new ChatMessage(ChatRole.Assistant, content));
+            }
+
+            var workflow = AgentWorkflowBuilder.BuildSequential(new List<ChatClientAgent> { _aggregator });
+            var aggregatorBuffer = new StringBuilder();
+            string? agentError = null;
+            // Seed completed-set with upstream agents so downstream logging + UI counts reflect
+            // the full turn (upstream + Aggregator), not just this phase.
+            var completedAgents = new HashSet<string>(pending.AgentsRun, StringComparer.OrdinalIgnoreCase);
+
+            StreamingRun run = await InProcessExecution.StreamAsync(workflow, input);
+            await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
+
+            yield return new TravelPlanProgress
+            {
+                CurrentAgent = "Aggregator",
+                Status = ProgressStatus.Starting,
+                Route = pending.Route,
+                ProgressPercent = 90
+            };
+
+            await foreach (var evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
+            {
+                if (evt is AgentRunUpdateEvent e)
+                {
+                    var content = e.Data?.ToString();
+                    if (string.IsNullOrEmpty(content)) continue;
+                    aggregatorBuffer.Append(content);
+
+                    yield return new TravelPlanProgress
+                    {
+                        CurrentAgent = "Aggregator",
+                        Status = ProgressStatus.Processing,
+                        PartialOutput = content,
+                        Route = pending.Route,
+                        ProgressPercent = 95
+                    };
+                }
+                else if (evt is ExecutorCompletedEvent completedEvt)
+                {
+                    var resolved = TryResolveAgent(completedEvt.ExecutorId);
+                    if (resolved != null) completedAgents.Add(resolved);
+
+                    yield return new TravelPlanProgress
+                    {
+                        CurrentAgent = resolved ?? "Aggregator",
+                        Status = ProgressStatus.Completed,
+                        Route = pending.Route,
+                        ProgressPercent = 100
+                    };
+                }
+                else if (evt is ExecutorFailedEvent failedEvt)
+                {
+                    var ex = failedEvt.Data as Exception;
+                    agentError = $"Aggregator failed: {ex?.InnerException?.Message ?? ex?.Message ?? "unknown error"}";
+                }
+                else if (evt is WorkflowErrorEvent errorEvt)
+                {
+                    var ex = errorEvt.Data as Exception;
+                    agentError = $"Aggregator workflow error: {ex?.InnerException?.Message ?? ex?.Message ?? "unknown error"}";
+                    break;
+                }
+                else if (evt is WorkflowOutputEvent) break;
+            }
+
+            stopwatch.Stop();
+            var totalDurationMs = pending.UpstreamDurationMs + stopwatch.ElapsedMilliseconds;
+
+            if (agentError != null || aggregatorBuffer.Length == 0)
+            {
+                var errText = agentError ?? "Aggregator produced no output";
+                yield return new TravelPlanProgress
+                {
+                    CurrentAgent = "system",
+                    Status = ProgressStatus.Error,
+                    PartialOutput = errText,
+                    Route = pending.Route,
+                    ProgressPercent = 0
+                };
+                LogTurnCompleted(conversation.Id, pending.Route, completedAgents.ToArray(),
+                    totalDurationMs, success: false, errText, routerUsage: null);
+                // Preserve PendingDecision so the user can retry approval; the upstream buffer
+                // is still valid, and re-running Aggregator is cheap relative to redoing upstream.
+                yield break;
+            }
+
+            var (planOnly, changeSummary) = SplitPlanAndChanges(aggregatorBuffer.ToString());
+            pending.AgentOutputs.TryGetValue("auditor", out var auditorRaw);
+            var finalText = EnforceAuditorVerdict(planOnly, auditorRaw, conversation.Id);
+
+            // Commit the turn: history + agent outputs (including Aggregator) + LatestPlan
+            var mergedOutputs = new Dictionary<string, string>(pending.AgentOutputs, StringComparer.OrdinalIgnoreCase)
+            {
+                ["aggregator"] = finalText
+            };
+
+            conversation.History.Add(new ChatMessage(ChatRole.User, pending.UserMessage));
+            conversation.History.Add(new ChatMessage(ChatRole.Assistant, finalText));
+            UpdateConversationMetadata(conversation, pending.UserMessage);
+            AppendTurnMetadata(conversation, pending.Route, completedAgents.ToArray(),
+                mergedOutputs, totalDurationMs, changeSummary,
+                extraInputTokens: pending.UpstreamInputTokens,
+                extraOutputTokens: pending.UpstreamOutputTokens);
+            conversation.LatestPlan = finalText;
+            conversation.PendingDecision = null;
+
+            yield return new TravelPlanProgress
+            {
+                CurrentAgent = "system",
+                Status = ProgressStatus.PlanFinal,
+                PartialOutput = finalText,
+                Route = pending.Route,
+                ProgressPercent = 100,
+                ChangeSummary = changeSummary
+            };
+
+            LogTurnCompleted(conversation.Id, pending.Route, completedAgents.ToArray(),
+                totalDurationMs, success: true, error: null, routerUsage: null);
+
+            yield return new TravelPlanProgress
+            {
+                CurrentAgent = "Complete",
+                Status = ProgressStatus.Completed,
+                Route = pending.Route,
+                ProgressPercent = 100
+            };
+        }
+
         /// <summary>
         /// Single Serilog structured-log emit point for completed turns. Fields land as
         /// individual properties in Serilog sinks (console + rolling file) and are queryable
@@ -847,6 +1200,27 @@ namespace LocalAgentTravelPlanner.Services
             TurnRoute.Clarify  => new() { _aggregator },
             _ => throw new InvalidOperationException($"No agent subset for route {route}")
         };
+
+        /// <summary>
+        /// Upstream slice of the pipeline — everything before Aggregator. Used only when the
+        /// human-in-the-loop gate is enabled: Phase 1 runs these, we pause for approval, then
+        /// Phase 2 runs Aggregator on the buffered output.
+        /// </summary>
+        private List<ChatClientAgent> SelectUpstreamAgents(TurnRoute route) => route switch
+        {
+            TurnRoute.Full     => new() { _researcher, _planner, _accountant, _auditor },
+            TurnRoute.Replan   => new() { _planner, _accountant, _auditor },
+            TurnRoute.Rebudget => new() { _accountant, _auditor },
+            TurnRoute.Reaudit  => new() { _auditor },
+            _ => throw new InvalidOperationException($"Route {route} is not gate-eligible (no upstream slice).")
+        };
+
+        /// <summary>
+        /// Gate applies only to routes that mutate <c>LatestPlan</c>. Clarify and OffTopic
+        /// bypass the gate — no plan to approve.
+        /// </summary>
+        private static bool IsGateEligible(TurnRoute route)
+            => route is TurnRoute.Full or TurnRoute.Replan or TurnRoute.Rebudget or TurnRoute.Reaudit;
 
         private static readonly Dictionary<TurnRoute, string[]> RouteAgentNames = new()
         {
@@ -904,8 +1278,19 @@ namespace LocalAgentTravelPlanner.Services
             IReadOnlyList<string> agentsRun,
             IReadOnlyDictionary<string, string>? agentOutputs = null,
             long? durationMs = null,
-            string? changeSummary = null)
+            string? changeSummary = null,
+            // Optional extras for resume paths where upstream tokens live on the pending state
+            // and only Aggregator tokens are in the current counter. Added on top of counter.
+            long? extraInputTokens = null,
+            long? extraOutputTokens = null)
         {
+            // Snapshot token totals accumulated during this turn. Counters reset on next turn
+            // via ResetTokenCounter() at each entry point.
+            var inputTokens = _tokenCounter?.InputTokens;
+            var outputTokens = _tokenCounter?.OutputTokens;
+            if (extraInputTokens.HasValue) inputTokens = (inputTokens ?? 0) + extraInputTokens.Value;
+            if (extraOutputTokens.HasValue) outputTokens = (outputTokens ?? 0) + extraOutputTokens.Value;
+
             conv.Turns.Add(new TurnMetadata(
                 TurnIndex: conv.Turns.Count,
                 Route: route,
@@ -915,15 +1300,24 @@ namespace LocalAgentTravelPlanner.Services
                 DurationMs: durationMs,
                 Provider: _providerName,
                 Model: _modelName,
-                ChangeSummary: changeSummary));
+                ChangeSummary: changeSummary,
+                InputTokens: inputTokens,
+                OutputTokens: outputTokens));
         }
+
+        /// <summary>
+        /// Zeros the token counter before a new turn begins. Called at the entry point of
+        /// every public streaming/non-streaming method so per-turn totals don't accumulate
+        /// across the lifetime of the same <see cref="IChatClient"/> instance.
+        /// </summary>
+        private void ResetTokenCounter() => _tokenCounter?.Reset();
 
         /// <summary>
         /// Splits the Aggregator's output into (plan document, change-summary bullets).
         /// Splits on the "## 🔄 Changes This Turn" heading emitted by the prompt for
         /// follow-up (subset) turns. Returns (fullText, null) if no such heading exists.
         /// </summary>
-        private static readonly string[] ChangeHeadingCandidates =
+        internal static readonly string[] ChangeHeadingCandidates =
         {
             "## 🔄 Changes This Turn",
             "## Changes This Turn",
@@ -931,17 +1325,29 @@ namespace LocalAgentTravelPlanner.Services
             "### Changes This Turn"
         };
 
-        private static (string Plan, string? ChangeSummary) SplitPlanAndChanges(string aggregatorOutput)
+        internal static (string Plan, string? ChangeSummary) SplitPlanAndChanges(string aggregatorOutput)
         {
             if (string.IsNullOrEmpty(aggregatorOutput)) return (aggregatorOutput, null);
 
             foreach (var heading in ChangeHeadingCandidates)
             {
-                var idx = aggregatorOutput.IndexOf(heading, StringComparison.Ordinal);
-                if (idx < 0) continue;
+                // Anchor to a line boundary. Without this, "## 🔄 Changes This Turn"
+                // would match as a substring inside "### 🔄 Changes This Turn" (offset 1),
+                // splitting the plan mid-heading.
+                int headingIdx;
+                if (aggregatorOutput.StartsWith(heading, StringComparison.Ordinal))
+                {
+                    headingIdx = 0;
+                }
+                else
+                {
+                    var newlineIdx = aggregatorOutput.IndexOf("\n" + heading, StringComparison.Ordinal);
+                    if (newlineIdx < 0) continue;
+                    headingIdx = newlineIdx + 1;
+                }
 
-                var plan = aggregatorOutput[..idx].TrimEnd();
-                var summary = aggregatorOutput[(idx + heading.Length)..].TrimStart('\r', '\n', ' ').TrimEnd();
+                var plan = aggregatorOutput[..headingIdx].TrimEnd();
+                var summary = aggregatorOutput[(headingIdx + heading.Length)..].TrimStart('\r', '\n', ' ').TrimEnd();
                 return (plan, string.IsNullOrWhiteSpace(summary) ? null : summary);
             }
             return (aggregatorOutput, null);
@@ -967,7 +1373,7 @@ namespace LocalAgentTravelPlanner.Services
         /// "Decision" contexts, falls back to first standalone APPROVED/FLAGGED/REJECTED
         /// word. Returns null if none found.
         /// </summary>
-        private static string? ExtractAuditorVerdict(string auditorOutput)
+        internal static string? ExtractAuditorVerdict(string auditorOutput)
         {
             if (string.IsNullOrEmpty(auditorOutput)) return null;
 
@@ -988,7 +1394,7 @@ namespace LocalAgentTravelPlanner.Services
         /// overwrite it. Emits a warning log so we can measure how often the model got
         /// this wrong.
         /// </summary>
-        private string EnforceAuditorVerdict(string plan, string? auditorOutput, string conversationId)
+        internal string EnforceAuditorVerdict(string plan, string? auditorOutput, string conversationId)
         {
             if (string.IsNullOrEmpty(plan) || string.IsNullOrEmpty(auditorOutput)) return plan;
 
