@@ -1,0 +1,21 @@
+# Litestream configuration for continuous SQLite replication.
+#
+# The `replicas` block below references LITESTREAM_REPLICA_URL from the environment
+# so operators can point at any supported backend (s3://, gs://, abs://, sftp://,
+# file://) without editing this file. Snapshot + WAL segments are pushed on a rolling
+# cadence; recovery is `litestream restore -o /data/conversations.db "$LITESTREAM_REPLICA_URL"`.
+#
+# Sync-interval + retention are tuned for the travel-planner workload (low write
+# volume, sub-MB DB, RPO measured in seconds): tighten sync-interval if RPO must be
+# under 1s, loosen if hosting bandwidth is expensive.
+
+dbs:
+  - path: /data/conversations.db
+    replicas:
+      - url: ${LITESTREAM_REPLICA_URL}
+        # Snapshot every 6 hours so restore doesn't have to replay days of WAL.
+        snapshot-interval: 6h
+        # Keep 72h of snapshots — enough for weekend outages, cheap on object storage.
+        retention: 72h
+        # Push WAL frames every 10s. Balances RPO against S3 PUT costs on chatty streams.
+        sync-interval: 10s
