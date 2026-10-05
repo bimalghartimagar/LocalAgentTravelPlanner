@@ -28,10 +28,12 @@
     <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-preview.251219.1" />
     <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.0.0-preview.251219.1" />
     <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="1.0.0-preview.251219.1" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.1.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.1.1-preview.1.25515.10" />
     <PackageReference Include="OllamaSharp" Version="5.4.12" />
+    <!-- Pinned transitively via Microsoft.Agents.AI preview; bumped past 1.13.x to clear GHSA-g94r-2vxg-569j. -->
+    <PackageReference Include="OpenTelemetry.Api" Version="1.19.1" />
   </ItemGroup>
 
 </Project>
