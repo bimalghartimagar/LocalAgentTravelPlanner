@@ -455,6 +455,15 @@ select#provider-select {
     flex-direction: column;
     gap: 0.6rem;
 }
+/* The HTML `hidden` attribute's default is `display: none`, but `.approval-card`'s
+   `display: flex` above wins specificity-wise and leaves the card visible on
+   every assistant bubble (buttons unwired, click does nothing). Explicit override. */
+.approval-card[hidden] { display: none !important; }
+.approval-feedback[hidden],
+.approval-approve[hidden],
+.approval-reject[hidden],
+.approval-reject-replan[hidden],
+.approval-cancel[hidden] { display: none !important; }
 .approval-header {
     display: flex;
     align-items: center;

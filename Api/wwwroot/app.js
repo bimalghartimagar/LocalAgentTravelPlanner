@@ -46,7 +46,8 @@ const state = {
     abortController: null,
     currentTurn: null,   // { bubble, agentContent, currentAgent, route, aggregatorBuffer, planRenderTimer }
     requireApproval: false,      // Per-conversation setting; toggle drives it.
-    pendingDecision: null        // Set when the current conversation is paused mid-turn.
+    pendingDecision: null,       // Set when the current conversation is paused mid-turn.
+    lastPendingDecision: null    // Snapshot kept during resolveDecision for error-path restore.
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -204,13 +205,25 @@ async function createConversation() {
         clearChat();
         clearPlan();
         // Apply pre-toggle preference if user checked "Require approval" before creating.
-        if (approvalToggle.checked && !state.requireApproval) {
+        // Guard on checkbox only — state.requireApproval was already set by the toggle
+        // handler, so a `!state.requireApproval` check would skip the PATCH on the
+        // common "user toggled on, then clicked New" flow.
+        if (approvalToggle.checked) {
             state.requireApproval = true;
-            fetch(`/api/conversations/${data.id}/settings`, {
-                method: 'PATCH',
-                headers: apiHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ requireApproval: true })
-            }).catch(() => { /* best-effort; toggle handler will re-emit if user re-checks */ });
+            try {
+                const patchRes = await fetch(`/api/conversations/${data.id}/settings`, {
+                    method: 'PATCH',
+                    headers: apiHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({ requireApproval: true })
+                });
+                if (!patchRes.ok) {
+                    console.warn('[new-conv] approval PATCH failed', patchRes.status);
+                    showError('Failed to enable approval gate on new conversation.');
+                }
+            } catch (err) {
+                console.warn('[new-conv] approval PATCH threw', err);
+                showError('Failed to enable approval gate on new conversation.');
+            }
         }
         await refreshConversationList();
         requestInput.focus();
@@ -482,12 +495,26 @@ requestInput.addEventListener('input', () => {
 
 // Example chips fill the composer
 document.addEventListener('click', (e) => {
+    // Diagnostic: log any click on an approval-card button so stuck-button reports
+    // can be bisected (listener-not-wired vs. wrong-element-clicked).
+    const btn = e.target.closest('.approval-approve, .approval-reject, .approval-reject-replan, .approval-cancel');
+    if (btn) {
+        console.log('[dom-click]', {
+            classes: btn.className,
+            disabled: btn.disabled,
+            hidden: btn.hidden,
+            inCard: !!btn.closest('.approval-card'),
+            cardGated: btn.closest('.approval-card')?.dataset?.gated,
+            cardResolved: btn.closest('.approval-card')?.dataset?.resolved,
+            cardInFlight: btn.closest('.approval-card')?.dataset?.inFlight
+        });
+    }
     const chip = e.target.closest('.chip');
     if (!chip) return;
     requestInput.value = chip.textContent;
     requestInput.dispatchEvent(new Event('input'));
     requestInput.focus();
-});
+}, true);
 
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -672,7 +699,12 @@ function handleEvent(type, data) {
         }
 
         case 'plan-final': {
-            if (data.plan) renderPlan(data.plan);
+            console.log('[plan-final] received', { planLen: (data.plan || '').length, changeSummaryLen: (data.changeSummary || '').length, bufferLen: turn.aggregatorBuffer?.length });
+            // Prefer the server's finalized plan; fall back to the buffered Aggregator
+            // output if the plan field is empty (e.g. Aggregator output started with the
+            // "Changes This Turn" heading and SplitPlanAndChanges produced an empty plan).
+            const planText = (data.plan && data.plan.trim()) || turn.aggregatorBuffer || '';
+            if (planText) renderPlan(planText);
             setStatus(bubble, 'Plan updated');
             // If Aggregator emitted a "Changes This Turn" section, show it in bubble body.
             // Otherwise fall back to pointer (first turn Full route or non-updating agent).
@@ -684,6 +716,8 @@ function handleEvent(type, data) {
             } else {
                 body.innerHTML = PLAN_UPDATED_POINTER_HTML;
             }
+            // If this plan-final came out of an approval-gate approve, mark the card as decided.
+            markApprovalCardDecided(bubble, 'approved');
             refreshConversationList();
             return true;
         }
@@ -693,6 +727,8 @@ function handleEvent(type, data) {
             const body = bubble.querySelector('.msg-body');
             body.innerHTML = marked.parse(data.reply || '');
             setStatus(bubble, turn.route === 'offtopic' ? 'Off-topic' : 'Answered');
+            // Reject-without-replan commits a clarified-style assistant reply — treat as rejected.
+            markApprovalCardDecided(bubble, 'rejected');
             refreshConversationList();
             return true;
         }
@@ -715,6 +751,12 @@ function handleEvent(type, data) {
                 : null;
             if (dot) { dot.classList.remove('active'); dot.classList.add('failed'); }
             setStatus(bubble, data.content || 'Error', 'error');
+            // Aggregator-phase failure preserves PendingDecision server-side so the user
+            // can retry. Restore Approve/Reject on the still-wired card.
+            restoreApprovalCardActions(bubble);
+            if (!state.pendingDecision && state.lastPendingDecision) {
+                state.pendingDecision = state.lastPendingDecision;
+            }
             return false; // terminal
         }
 
@@ -740,6 +782,15 @@ function finalizeTurn(opts) {
         // If aggregator streamed but no plan-final arrived (e.g. cancel), still settle the right pane
         if (turn.aggregatorBuffer && !opts.cancelled && turn.route && turn.route !== 'clarify') {
             renderPlan(turn.aggregatorBuffer);
+            // Also settle the approval card. The server may have closed the stream before
+            // emitting plan-final (connection blip, keep-alive drop), but a non-empty
+            // aggregator buffer means the Aggregator produced output — treat as approved.
+            if (turn.bubble) {
+                const card = turn.bubble.querySelector('.approval-card');
+                if (card && card.dataset.gated === 'true' && !card.dataset.resolved) {
+                    markApprovalCardDecided(turn.bubble, 'approved');
+                }
+            }
         } else {
             planScroll.classList.remove('streaming');
         }
@@ -822,12 +873,104 @@ function scheduleDetailsTabSwitch(bubble, agent) {
     }
 }
 
+/// Puts the approval card into an "in-flight" state the moment the user clicks Approve
+/// or Reject. Approve/Reject/Reject+replan buttons disappear so there's no ambiguity
+/// about whether the click landed; Cancel stays so the user can always bail. The error
+/// path flips this back to the actionable state via restoreApprovalCardActions.
+function markApprovalCardInFlight(bubble, label) {
+    const card = bubble.querySelector('.approval-card');
+    if (!card) { console.warn('[approve-ui] no .approval-card on bubble', bubble); return; }
+    if (card.dataset.gated !== 'true') {
+        console.warn('[approve-ui] card not gated — forcing in-flight state anyway', card);
+    }
+    card.dataset.inFlight = 'true';
+    card.hidden = false;
+    const approveBtn = card.querySelector('.approval-approve');
+    const rejectBtn = card.querySelector('.approval-reject');
+    const rejectReplanBtn = card.querySelector('.approval-reject-replan');
+    const feedbackWrap = card.querySelector('.approval-feedback');
+    // Both hide AND disable — defense in depth. If one path races the other, at least the
+    // user cannot double-click a stale handler.
+    for (const btn of [approveBtn, rejectBtn, rejectReplanBtn]) {
+        if (!btn) continue;
+        btn.hidden = true;
+        btn.disabled = true;
+    }
+    if (feedbackWrap) feedbackWrap.hidden = true;
+    const body = card.querySelector('.approval-body');
+    if (body) {
+        body.innerHTML =
+            '<span class="approval-spinner" aria-hidden="true" ' +
+                'style="display:inline-block;width:0.9em;height:0.9em;border:2px solid currentColor;' +
+                'border-right-color:transparent;border-radius:50%;animation:approval-spin 0.8s linear infinite;' +
+                'vertical-align:-2px;margin-right:0.5rem;"></span>' +
+            '<span class="approval-inflight-label">' + (label || 'Processing…') + '</span>';
+    }
+    ensureApprovalSpinnerKeyframes();
+}
+
+/// Injects the spin keyframes once per page. Cheaper than a stylesheet edit, and keeps the
+/// in-flight styling self-contained within app.js so an index.html edit isn't required.
+function ensureApprovalSpinnerKeyframes() {
+    if (document.getElementById('approval-spinner-keyframes')) return;
+    const style = document.createElement('style');
+    style.id = 'approval-spinner-keyframes';
+    style.textContent = '@keyframes approval-spin { to { transform: rotate(360deg); } }';
+    document.head.appendChild(style);
+}
+
+/// Reverses markApprovalCardInFlight on error so the user can retry Approve or Reject
+/// without reloading. No-op if the decision already resolved successfully.
+function restoreApprovalCardActions(bubble) {
+    const card = bubble.querySelector('.approval-card');
+    if (!card) return;
+    if (card.dataset.resolved) return;
+    card.dataset.inFlight = '';
+    const approveBtn = card.querySelector('.approval-approve');
+    const rejectBtn = card.querySelector('.approval-reject');
+    for (const btn of [approveBtn, rejectBtn]) {
+        if (!btn) continue;
+        btn.hidden = false;
+        btn.disabled = false;
+    }
+    const body = card.querySelector('.approval-body');
+    if (body) body.textContent = 'Upstream agents finished. Aggregator will not run until you decide.';
+}
+
+/// Converts a live approval card into a historical "decided" badge. Keeps the card
+/// visible so the user sees how the turn resolved, but strips the actionable controls
+/// so there's no ambiguity about whether a decision landed. Only fires when the card
+/// was actually used in this turn (showApprovalCard sets data-gated=true); non-gated
+/// turns still emit plan-final but their hidden template card should stay hidden.
+function markApprovalCardDecided(bubble, outcome) {
+    const card = bubble.querySelector('.approval-card');
+    if (!card) { console.warn('[markDecided] no card on bubble'); return; }
+    if (card.dataset.gated !== 'true') { console.warn('[markDecided] card not gated, skip', { gated: card.dataset.gated, outcome }); return; }
+    if (card.dataset.resolved === outcome) { console.log('[markDecided] already resolved as', outcome); return; }
+    console.log('[markDecided] flipping to', outcome);
+    card.dataset.resolved = outcome;
+    card.hidden = false;
+    // Decision landed — drop the snapshot so a future error on a *different* turn
+    // doesn't accidentally restore stale pending state.
+    state.lastPendingDecision = null;
+    const label = outcome === 'approved' ? 'Approved ✓' : 'Rejected ✗';
+    const colorVar = outcome === 'approved' ? 'var(--success, #2b7a2b)' : 'var(--danger, #a33)';
+    card.innerHTML =
+        '<div class="approval-header" style="display:flex;align-items:center;gap:0.5rem;">' +
+            '<span class="approval-title" style="font-weight:600;">Decision</span>' +
+            `<span class="approval-verdict" style="color:${colorVar};font-weight:600;">${label}</span>` +
+        '</div>';
+}
+
 /// Renders the approval card on the given bubble and wires up its buttons. Card is
 /// idempotent — safe to call twice (later calls just re-populate the verdict/actions).
 function showApprovalCard(bubble, pending) {
     const card = bubble.querySelector('.approval-card');
-    if (!card) return;
+    if (!card) { console.warn('[showApprovalCard] no .approval-card in bubble', bubble); return; }
+    console.log('[showApprovalCard] wiring buttons', { verdict: pending?.auditorVerdict, route: pending?.route });
     card.hidden = false;
+    card.dataset.gated = 'true';
+    delete card.dataset.resolved;
 
     const verdict = (pending.auditorVerdict || '').toLowerCase();
     const verdictEl = card.querySelector('.approval-verdict');
@@ -859,7 +1002,6 @@ function showApprovalCard(bubble, pending) {
         if (!feedbackOpen) {
             feedbackWrap.hidden = false;
             rejectReplanFresh.hidden = false;
-            cancelFresh.hidden = false;
             feedbackInput.focus();
             feedbackOpen = true;
             return;
@@ -897,21 +1039,65 @@ function showApprovalCard(bubble, pending) {
         } catch { showError('Failed to cancel pending draft.'); }
     });
 
-    approveFresh.addEventListener('click', () => {
+    approveFresh.addEventListener('click', (ev) => {
+        console.log('[approve-click] fired on bubble', bubble, 'target', ev.target);
+        // Belt-and-braces: disable the clicked button inline here so the user sees
+        // immediate feedback even if the downstream state machine hiccups.
+        ev.target.disabled = true;
+        ev.target.textContent = 'Approving…';
         resolveDecision(bubble, { approve: true, feedback: null, replan: false });
     });
+
+    rejectFresh.addEventListener('click', (ev) => {
+        // Note: rejectFresh already has a listener attached earlier for the feedback-open
+        // toggle. This secondary click-logger helps diagnose "click did nothing" reports.
+        console.log('[reject-click] fired', { feedbackOpen, target: ev.target });
+    }, { capture: true });
 }
 
 /// Opens a fresh SSE stream to /decision/stream to resume the paused turn. Reuses the
 /// existing bubble so the plan renders in place, and reuses handleEvent so approve
 /// (Aggregator run) and reject-and-replan (full new turn) both drive the same UI.
 async function resolveDecision(bubble, decision) {
-    if (!state.conversationId || !state.pendingDecision) return;
+    if (!state.conversationId) {
+        console.warn('[approve] no conversationId; cannot resolve', { decision });
+        showError('No conversation selected.');
+        return;
+    }
+    if (!state.pendingDecision) {
+        // Stale UI — buttons shown but client state has no pending reference. Fetch from
+        // the server; if the server still has PendingDecision, hydrate state so retry works.
+        console.warn('[approve] state.pendingDecision missing; re-fetching from server', { decision });
+        try {
+            const res = await fetch(`/api/conversations/${state.conversationId}`, { headers: apiHeaders() });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.pendingDecision) {
+                    state.pendingDecision = data.pendingDecision;
+                } else {
+                    showError('No pending draft on the server. Reload to resync.');
+                    return;
+                }
+            } else {
+                showError(`Failed to re-fetch conversation (${res.status}).`);
+                return;
+            }
+        } catch (err) {
+            showError('Lost connection to server.');
+            return;
+        }
+    }
+    console.log('[approve] firing /decision/stream', { approve: decision.approve, replan: decision.replan, hasFeedback: !!decision.feedback });
     hideError();
 
-    // Hide the approval card while resuming — reopens if the server errors out.
-    const card = bubble.querySelector('.approval-card');
-    if (card) card.hidden = true;
+    // Flip the card into "in-flight" immediately so the Approve/Reject buttons vanish on
+    // click, not after the stream finishes. Cancel stays visible as the escape hatch.
+    const inFlightLabel = decision.approve
+        ? 'Approving — Aggregator is drafting the final plan…'
+        : decision.replan
+            ? 'Replanning with your feedback…'
+            : 'Recording rejection…';
+    markApprovalCardInFlight(bubble, inFlightLabel);
 
     // Wire the turn state onto the existing bubble so aggregator content streams into
     // the right pane exactly like a normal turn. Preserve prior agent content so the
@@ -941,7 +1127,9 @@ async function resolveDecision(bubble, decision) {
 
     // Once we start resolving, treat the previous pending state as consumed. If the
     // server emits a NEW approval-required (e.g. reject-and-replan and gate still on),
-    // that event will re-populate state.pendingDecision.
+    // that event will re-populate state.pendingDecision. Keep a snapshot so the error
+    // path can restore the gated state if the server kept PendingDecision alive.
+    state.lastPendingDecision = state.pendingDecision;
     state.pendingDecision = null;
 
     const params = new URLSearchParams({
@@ -960,6 +1148,9 @@ async function resolveDecision(bubble, decision) {
             headers: apiHeaders()
         });
         if (!res.ok) {
+            // Server rejected the decision (409 pending-missing, 429 rate limit, etc.).
+            // Flip the card back to actionable so retry is one click.
+            restoreApprovalCardActions(bubble);
             const handled = await handleApiErrorResponse(res);
             finalizeTurn({ cancelled: true });
             if (!handled) showError(`Server error: ${res.status}`);
