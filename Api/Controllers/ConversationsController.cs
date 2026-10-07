@@ -282,7 +282,11 @@ public class ConversationsController : ControllerBase
         {
             Response.StatusCode = StatusCodes.Status409Conflict;
             Response.ContentType = "application/json";
-            await Response.WriteAsync("""{"error":"Conversation is currently processing another message."}""", cancellationToken);
+            var payload = JsonSerializer.Serialize(ApiError.From(
+                ErrorCodes.ConversationBusy,
+                "Conversation is currently processing another message. Wait for it to finish and try again."),
+                SseJsonOptions);
+            await Response.WriteAsync(payload, cancellationToken);
             return;
         }
 
@@ -301,11 +305,14 @@ public class ConversationsController : ControllerBase
         {
             Response.StatusCode = StatusCodes.Status409Conflict;
             Response.ContentType = "application/json";
-            var payload = JsonSerializer.Serialize(new
-            {
-                error = "This conversation has a pending decision. Resolve it before sending a new message.",
-                pendingDecision = PendingDecisionDto.From(conv.PendingDecision)
-            }, SseJsonOptions);
+            var payload = JsonSerializer.Serialize(ApiError.From(
+                ErrorCodes.PendingDecisionOpen,
+                "This conversation has a pending decision. Approve, reject, or cancel it before sending a new message.",
+                new Dictionary<string, object?>
+                {
+                    ["pendingDecision"] = PendingDecisionDto.From(conv.PendingDecision)
+                }),
+                SseJsonOptions);
             await Response.WriteAsync(payload, cancellationToken);
             return;
         }
@@ -392,7 +399,11 @@ public class ConversationsController : ControllerBase
         {
             Response.StatusCode = StatusCodes.Status409Conflict;
             Response.ContentType = "application/json";
-            await Response.WriteAsync("""{"error":"Conversation is currently processing another request."}""", cancellationToken);
+            var payload = JsonSerializer.Serialize(ApiError.From(
+                ErrorCodes.ConversationBusy,
+                "Conversation is currently processing another request."),
+                SseJsonOptions);
+            await Response.WriteAsync(payload, cancellationToken);
             return;
         }
 
