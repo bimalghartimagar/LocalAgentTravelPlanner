@@ -1062,8 +1062,35 @@ namespace LocalAgentTravelPlanner.Services
                 ProgressPercent = 90
             };
 
-            await foreach (var evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
+            // MAF surfaces most failures as WorkflowErrorEvent, but some SDK-level parse
+            // errors (e.g. MEAI's ChatFinishReason rejecting a provider's unknown value
+            // like OpenRouter's "error" reason) throw out of the enumerator instead.
+            // Advance manually so we can trap those and preserve PendingDecision for retry.
+            await using var enumerator = run.WatchStreamAsync()
+                .WithCancellation(cancellationToken)
+                .GetAsyncEnumerator();
+            while (true)
             {
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex,
+                        "Aggregator stream threw. ConversationId={ConversationId} Route={Route} Provider={Provider} Model={Model}",
+                        conversation.Id, pending.Route.ToString(), _providerName, _modelName);
+                    agentError = $"Aggregator stream failure ({ex.GetType().Name}): {ex.Message}";
+                    break;
+                }
+                if (!hasNext) break;
+
+                var evt = enumerator.Current;
                 if (evt is AgentRunUpdateEvent e)
                 {
                     var content = e.Data?.ToString();
