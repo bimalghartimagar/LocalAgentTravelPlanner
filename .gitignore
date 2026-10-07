@@ -20,9 +20,18 @@ bin/
 appsettings.*.local.json
 appsettings.Local.json
 appsettings.Production.json
-**/appsettings.Development.json/**
+Api/appsettings.Development.json
 logs/
 *.db
 *.db-wal
 *.db-shm
 .keys.txt
+
+# Editor / IDE / tool caches
+.claude/
+.dotnet/
+*.lscache
+
+# Local scratch
+blog-review/
+nul

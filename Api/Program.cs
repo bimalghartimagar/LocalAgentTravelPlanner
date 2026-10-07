@@ -216,7 +216,24 @@ try
     app.UseMiddleware<ApiKeyMiddleware>();
     app.UseRateLimiter();
     app.UseDefaultFiles();
-    app.UseStaticFiles();
+    // Dev iteration: tell the browser not to cache app.js / index.html so a code change
+    // picks up on a plain reload without needing the ?v= cache-bust. For production an
+    // asset-hash build step would be the right answer, but the UI is hand-maintained here.
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        OnPrepareResponse = ctx =>
+        {
+            var path = ctx.File.Name;
+            if (path.EndsWith(".html", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".css", StringComparison.OrdinalIgnoreCase))
+            {
+                ctx.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+                ctx.Context.Response.Headers.Pragma = "no-cache";
+                ctx.Context.Response.Headers.Expires = "0";
+            }
+        }
+    });
     app.MapControllers();
 
     app.Run();
